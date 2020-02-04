@@ -1,14 +1,15 @@
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import backend as K
 import numpy as np
 from pathlib import Path
 import matplotlib
 import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 
 
 # Define reward prediction network
-class Agent():
+class AgentTorch():
 
 
     # ------------------------- Initialization -------------------------
@@ -19,7 +20,7 @@ class Agent():
 
         print('Creating agent ' + str(self.name))
 
-        self.q_value_filename = name + '.h5'
+        self.q_value_filename = name + '.pt'
         self.memory_buffer_filename = name + '.npz'
 
         self.discount = discount
@@ -34,13 +35,14 @@ class Agent():
         self.num_of_state_variables = env.observation_space.shape[0]
         self.action_min = env.action_space.low
         self.action_max = env.action_space.high
-        self.reward_min = env.reward_range[0] if (env.reward_range[0] != -np.inf) else -16.2736044 # change back to -1
-        self.reward_max = env.reward_range[1] if (env.reward_range[1] != np.inf) else 0 # change back to 1
+        self.reward_min = -1
+        self.reward_max = 1
+        #self.reward_min = env.reward_range[0] if (env.reward_range[0] != -np.inf) else -16.2736044 # change back to -1
+        #self.reward_max = env.reward_range[1] if (env.reward_range[1] != np.inf) else 0 # change back to 1
         self.state_min = env.observation_space.low
         self.state_max = env.observation_space.high
 
         self.build_network()
-        self.build_learner_network()
 
         if self.max_size_of_memory_buffer > 0:
             self.create_memory_buffer()
@@ -70,7 +72,7 @@ class Agent():
 
         self.train()
         self.save_networks()
-        #self.save_memory_buffer()
+        self.save_memory_buffer()
 
         pass
 
@@ -85,7 +87,45 @@ class Agent():
 
         max_next_action = self.find_action(next_state)
 
-        self.q_value_learner.fit([state, action, next_state, max_next_action, done], [reward], verbose=2, epochs=self.learn_iterations, batch_size=self.batch_size, shuffle=True)
+        state = torch.from_numpy(state).float()
+        action = torch.from_numpy(action).float()
+        reward = torch.from_numpy(reward).float()
+        next_state = torch.from_numpy(next_state).float()
+        done = torch.from_numpy(done).float()
+        max_next_action = torch.from_numpy(max_next_action).float()
+
+        trainset = torch.utils.data.TensorDataset(state, action, next_state, max_next_action, done, reward)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, shuffle=False)
+
+        for epoch in range(self.learn_iterations):
+
+            running_loss = 0.0
+            running_count = 0.0
+            for i, data in enumerate(trainloader, 0):
+
+                # get the inputs; data is a list of [inputs, labels]
+                in_state, in_action, in_next_state, in_max_next_action, in_done, out_reward = data
+
+                # set the model to train mode
+                self.q_value.train()
+
+                # forward + backward + optimize
+                self.optimizer.zero_grad()
+                q_values = self.q_value(in_state, in_action)
+                with torch.no_grad():
+                    q_values_next_no_grad = self.q_value(in_next_state, in_max_next_action)
+                q_values_next_with_grad = self.q_value(in_next_state, in_max_next_action)
+                q_values_next = self.next_learn_factor * q_values_next_with_grad + (1.0 - self.next_learn_factor) * q_values_next_no_grad
+                outputs = q_values - q_values_next * self.discount * (1.0 - in_done)
+                loss = self.criterion(outputs, out_reward)
+                loss.backward()
+                self.optimizer.step()
+
+                # gather statistics
+                running_loss += loss.item()
+                running_count += 1.0
+
+            print('Epoch: ' + str(epoch + 1) + ' Loss:' + str(running_loss / running_count))
 
         pass
 
@@ -95,9 +135,17 @@ class Agent():
 
         repeated_states = np.repeat(in_states, self.num_of_hypothetical_actions, axis=0)
 
-        actions = self.generate_actions(number=num_of_states*self.num_of_hypothetical_actions)
+        actions = self.generate_actions(number=num_of_states)
 
-        q_values = self.q_value.predict([repeated_states, actions])
+        repeated_states_t = torch.from_numpy(repeated_states).float()
+        actions_t = torch.from_numpy(actions).float()
+
+        self.q_value.eval()
+
+        with torch.no_grad():
+            q_values_t = self.q_value(repeated_states_t, actions_t)
+
+        q_values = q_values_t.numpy()
 
         max_actions = np.zeros((num_of_states, self.num_of_action_variables))
         for i in range(num_of_states):
@@ -105,7 +153,7 @@ class Agent():
             index = i * self.num_of_hypothetical_actions + np.arange(self.num_of_hypothetical_actions)
             index = index.flatten()
             hypothetical_actions = actions[index, :]
-            hypothetical_actions = np.sort(hypothetical_actions, axis=0) # For debug only
+            #hypothetical_actions = np.sort(hypothetical_actions, axis=0) # For debug only
             hypothetical_q_values = q_values[index, :]
 
             action_probs = self.softmax(hypothetical_q_values, prob_factor)
@@ -124,8 +172,11 @@ class Agent():
 
     def generate_actions(self, number=1):
 
-        #actions = np.random.uniform(-1, 1, (number, self.num_of_action_variables))
-        actions = np.array(np.linspace(-1, 1, num=number), ndmin=2).transpose()
+        actions = np.zeros([self.num_of_hypothetical_actions*number, self.num_of_action_variables])
+        for n in range(number):
+            i = n * self.num_of_hypothetical_actions + np.arange(self.num_of_hypothetical_actions)
+            # actions[i, :] = np.random.uniform(-1, 1, (self.num_of_hypothetical_actions, self.num_of_action_variables))
+            actions[i, :] = np.array(np.linspace(-1, 1, num=self.num_of_hypothetical_actions), ndmin=2).transpose()
 
         return actions
 
@@ -134,62 +185,52 @@ class Agent():
 
     def build_network(self):
 
+        print('Building value network')
+
+        class Net(nn.Module):
+
+            def __init__(self, state_in_size, action_in_size):
+                super(Net, self).__init__()
+                self.state_in_size = state_in_size
+                self.action_in_size = action_in_size
+                self.fc1 = nn.Linear(self.state_in_size + self.action_in_size, 256)
+                self.fc2 = nn.Linear(256, 128)
+                self.fc3 = nn.Linear(128, 64)
+                self.fc4 = nn.Linear(64, 32)
+                self.fc5 = nn.Linear(32, 1)
+
+            def forward(self, state_input, action_input):
+                x = torch.cat((state_input, action_input), dim=1)
+                x = F.relu(self.fc1(x))
+                x = F.relu(self.fc2(x))
+                x = F.relu(self.fc3(x))
+                x = F.relu(self.fc4(x))
+                x = self.fc5(x)
+                return x
+
+        self.q_value = Net(self.num_of_state_variables, self.num_of_action_variables)
+
         q_value_file = Path(self.q_value_filename)
 
-        if q_value_file.is_file() or q_value_file.is_dir():
+        if q_value_file.is_file():
             # Load value network
             print('Loading network from file ' + self.q_value_filename)
-            self.q_value = keras.models.load_model(self.q_value_filename)
+            self.q_value.load_state_dict(torch.load(self.q_value_filename))
 
         else:
             # Build value network
-            print('Building network')
+            print('No network loaded from file')
 
-            state_input = keras.layers.Input(shape=(self.num_of_state_variables,))
-            action_input = keras.layers.Input(shape=(self.num_of_action_variables,))
-
-            q_value_b1 = keras.layers.Concatenate()([state_input, action_input])
-            q_value_b1 = keras.layers.Dense(256, activation='relu')(q_value_b1)
-            q_value_b1 = keras.layers.Dense(128, activation='relu')(q_value_b1)
-            q_value_b1 = keras.layers.Dense(64, activation='relu')(q_value_b1)
-            q_value_b1 = keras.layers.Dense(32, activation='relu')(q_value_b1)
-            value_output = keras.layers.Dense(1, activation='linear')(q_value_b1)
-
-            self.q_value = keras.models.Model([state_input, action_input], [value_output], name='q_value')
-
-        self.q_value.trainable = True
-        self.q_value.compile(optimizer=keras.optimizers.Adam(lr=self.learn_rate), loss='mse')
-        # self.q_value.summary()
+        self.criterion = nn.MSELoss()
+        self.optimizer = optim.SGD(self.q_value.parameters(), lr=self.learn_rate, momentum=0)
+        #self.optimizer = optim.Adam(self.q_value.parameters(), lr=self.learn_rate)
 
         pass
 
-    def build_learner_network(self):
-
-        # Build value network
-        print('Building learner network')
-
-        state_input = keras.layers.Input(shape=(self.num_of_state_variables,))
-        action_input = keras.layers.Input(shape=(self.num_of_action_variables,))
-        next_state_input = keras.layers.Input(shape=(self.num_of_state_variables,))
-        max_next_action_input = keras.layers.Input(shape=(self.num_of_action_variables,))
-        done_input = keras.layers.Input(shape=(1,))
-
-        q_value = self.q_value([state_input, action_input])
-        next_q_value = self.q_value([next_state_input, max_next_action_input])
-        next_q_value_mod = keras.layers.Lambda(lambda x: self.next_learn_factor * x + tf.stop_gradient((1 - self.next_learn_factor) * x))(next_q_value)
-        reward_out = keras.layers.Lambda(lambda x: x[0] - x[1] * self.discount * (1.0 - x[2]))([q_value, next_q_value_mod, done_input])
-
-        self.q_value_learner = keras.models.Model([state_input, action_input, next_state_input, max_next_action_input, done_input], [reward_out], name='q_value_learner')
-
-        self.q_value_learner.trainable = True
-        self.q_value_learner.compile(optimizer=keras.optimizers.Adam(lr=self.learn_rate), loss='mse')
-        # self.q_value_learner.summary()
-
-        pass
 
     def save_networks(self):
 
-        self.q_value.save(self.q_value_filename)
+        torch.save(self.q_value.state_dict(), self.q_value_filename)
 
         pass
 
