@@ -2,7 +2,7 @@ import gym
 import numpy as np
 
 #from agent import Agent
-from agentTorch import AgentTorch
+from agentTorchDiscrete import AgentTorchDiscrete
 
 # Run simulation
 env = gym.make('Pendulum-v0')
@@ -18,7 +18,9 @@ env = gym.make('Pendulum-v0')
 #9 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.01, random actions, score = bad
 #10 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.1, fixed action + random, score = -149
 #11 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.1, fixed action + random, PyTorch, score = -149
-agent = AgentTorch(env, "test21", discount=0.99, batch_size=1000, learn_rate=0.0001, learn_iterations=10, memory_buffer_size=1000000, next_learn_factor=0.3, num_of_hypothetical_actions=9)
+#next_learn_factor=0.3
+#AgentTorchDiscrete(env, "test29", discount=0.99, batch_size=1000, learn_rate=0.001, policy_learn_rate=0.0001, learn_iterations=10, memory_buffer_size=1000000, next_learn_factor=0.0, num_of_hypothetical_actions=9)
+agent = AgentTorchDiscrete(env, "test28", discount=0.99, batch_size=1000, value_learn_rate=0.001, policy_learn_rate=0.001, max_policy_learn_rate=0.0001, learn_iterations=10, memory_buffer_size=1000000, next_learn_factor=0.0, num_of_hypothetical_actions=9)
 probMultiple = 0.01
 episodes = 300
 
