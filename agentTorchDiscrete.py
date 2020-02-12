@@ -48,6 +48,9 @@ class AgentTorchDiscrete():
         self.state_min = env.observation_space.low
         self.state_max = env.observation_space.high
 
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print('Using device:', self.device)
+
         self.build_value_network()
         self.build_policy_network()
         self.build_max_policy_network()
@@ -62,7 +65,7 @@ class AgentTorchDiscrete():
     def act(self, in_state, prob_factor=0):
 
         [state] = self.preprocess(state=in_state)
-        state = torch.from_numpy(state).float().detach()
+        state = torch.from_numpy(state).float().detach().to(self.device)
 
         self.policy.eval()
         self.max_policy.eval()
@@ -101,11 +104,11 @@ class AgentTorchDiscrete():
 
         state, action, reward, next_state, done, validation = self.recall_memory()
 
-        state = torch.from_numpy(state).float().detach()
-        action = torch.from_numpy(action).float().detach()
-        reward = torch.from_numpy(reward).float().detach()
-        next_state = torch.from_numpy(next_state).float().detach()
-        done = torch.from_numpy(done).float().detach()
+        state = torch.from_numpy(state).float().detach().to(self.device)
+        action = torch.from_numpy(action).float().detach().to(self.device)
+        reward = torch.from_numpy(reward).float().detach().to(self.device)
+        next_state = torch.from_numpy(next_state).float().detach().to(self.device)
+        done = torch.from_numpy(done).float().detach().to(self.device)
 
         trainset = torch.utils.data.TensorDataset(state, action, next_state, done, reward)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, shuffle=False)
@@ -202,7 +205,7 @@ class AgentTorchDiscrete():
                 x = self.fc5(x)
                 return x
 
-        self.value = Net(self.num_of_state_variables, self.num_of_hypothetical_actions)
+        self.value = Net(self.num_of_state_variables, self.num_of_hypothetical_actions).to(self.device)
 
         value_file = Path(self.value_filename)
 
@@ -243,7 +246,7 @@ class AgentTorchDiscrete():
                 x = self.fc5(x)
                 return x
 
-        self.policy = Net(self.num_of_state_variables, self.num_of_hypothetical_actions)
+        self.policy = Net(self.num_of_state_variables, self.num_of_hypothetical_actions).to(self.device)
 
         policy_file = Path(self.policy_filename)
 
@@ -280,7 +283,7 @@ class AgentTorchDiscrete():
                 x = self.fc5(x)
                 return x
 
-        self.max_policy = Net(self.num_of_state_variables, self.num_of_hypothetical_actions)
+        self.max_policy = Net(self.num_of_state_variables, self.num_of_hypothetical_actions).to(self.device)
 
         max_policy_file = Path(self.max_policy_filename)
 

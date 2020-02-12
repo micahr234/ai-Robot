@@ -6,7 +6,7 @@ from agentTorchDiscrete import AgentTorchDiscrete
 
 # Run simulation
 env = gym.make('Pendulum-v0')
-agent = AgentTorchDiscrete(env, "test28", num_of_hypothetical_actions=9)
+agent = AgentTorchDiscrete(env, "test30", num_of_hypothetical_actions=9)
 cumulative_score = 0
 episodes = 200
 
