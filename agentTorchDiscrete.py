@@ -75,7 +75,7 @@ class AgentTorchDiscrete():
             policy_probs = F.softmax(policy_logits, dim=1)
             action = torch.multinomial(policy_probs, 1, replacement=True)[0]
 
-        out_action = action.numpy()
+        out_action = action.cpu().numpy()
         [out_action] = self.postprocess(action=out_action)
 
         return out_action
