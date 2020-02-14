@@ -1,7 +1,4 @@
 import gym
-import numpy as np
-
-#from agent import Agent
 from agentTorchDiscrete import AgentTorchDiscrete
 
 # Run simulation
