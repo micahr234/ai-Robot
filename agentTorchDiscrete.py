@@ -168,6 +168,7 @@ class AgentTorchDiscrete():
                 self.policy.load_state_dict(policy_dict)
 
                 # gather statistics
+
                 p = max_policy_probs.detach().cpu().numpy()
                 e = -p * np.log(p, out=np.zeros_like(p), where=p != 0)
                 action_entropy = action_entropy + np.sum(e, axis=1).tolist()
