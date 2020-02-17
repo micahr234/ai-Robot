@@ -1,51 +1,60 @@
 import gym
+import pybullet
+import pybullet_envs
+import pybullet_data
 from agentTorchDiscrete import AgentTorchDiscrete
 
 # Run simulation
-env = gym.make('Pendulum-v0')
-#random score = -1221
-#1 actions 5, epochs 600 lr 0.0001 nlf = 0.0, score = -153
-#2 actions 5, epochs 600 lr 0.0001 nlf = 0.1, score = -143
-#3 actions 5, epochs 300, lr = 0.0001, nlf = 0.0, probMultiple = 0.2, score = -163
-#4 actions 5, epochs 300, lr = 0.0001, nlf = 0.0, probMultiple = 0.1, score = -188
-#5 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.1, score = -145
-#6 actions 9, epochs 300, lr = 0.0001, nlf = 0.01, probMultiple = 0.1, score = ~-900
-#7 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.1, random actions, score = bad
-#8 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.05, random actions, score = bad
-#9 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.01, random actions, score = bad
-#10 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.1, fixed action + random, score = -149
-#11 actions 9, epochs 300, lr = 0.0001, nlf = 0.00, probMultiple = 0.1, fixed action + random, PyTorch, score = -149
-#next_learn_factor=0.3
-#AgentTorchDiscrete(env, "test29", discount=0.99, batch_size=1000, learn_rate=0.001, policy_learn_rate=0.0001, learn_iterations=10, memory_buffer_size=1000000, next_learn_factor=0.0, num_of_hypothetical_actions=9)
-agent = AgentTorchDiscrete(env, "test30", discount=0.99, batch_size=1000, value_learn_rate=0.0001, policy_learn_rate=0.001, max_policy_learn_rate=0.0001, learn_iterations=10, memory_buffer_size=1000000, next_learn_factor=0.0, num_of_hypothetical_actions=9)
-probMultiple = 0.01
-episodes = 300
+env = gym.make('CartPoleBulletEnv-v1', renders=True, discrete_actions=True)
 
-for n in range(episodes):
+action_space = [[0, 1]]
+state_space_min = [-1, -1, -1, -1]
+state_space_max = [1, 1, 1, 1]
+reward_space_min = [0]
+reward_space_max = [1]
+agent = AgentTorchDiscrete("test1", action_space, state_space_min, state_space_max, reward_space_min, reward_space_max,
+                           discount=0.999, batch_size=1000, value_learn_rate=0.001, policy_learn_rate=0.0001, policy_copy_rate=0.1,
+                           learn_iterations=10, memory_buffer_size=1000000, next_learn_factor=0.5)
 
-    observation = env.reset()
-    env.render()
+learn_episodes = 100
+test_episodes = 100
+learn_interval = 10
+render = True
+
+cumulative_score = 0
+for n in range(learn_episodes + test_episodes):
+
+    next_observation = env.reset()
+    if render: env.render()
 
     score = 0
     t = 0
 
     while True:
 
-        #action_random = np.random.normal(0, 0.01)
-        action = agent.act(observation, prob_factor=probMultiple)# + action_random
+        t += 1
+        observation = next_observation
+
+        action = agent.act(observation)
         next_observation, reward, done, info = env.step(action)
         agent.record(observation, action, reward, next_observation, done)
         score += reward
 
-        env.render()
+        if render: env.render()
 
         if done:
 
-            print("Episode " + str(n) + " finished after " + str(t + 1) + " timesteps - cumulative reward = " + str(score))
-            agent.learn()
+            if n < learn_episodes:
+                print("Learn episode " + str(n) + " finished after " + str(t) + " timesteps - reward = " + str(score))
+                if (n % learn_interval) == (learn_interval-1): agent.learn()
+
+            else:
+                print("Test episode " + str(n) + " finished after " + str(t) + " timesteps - reward = " + str(score))
+                cumulative_score += score
+
             break
 
-        observation = next_observation
-        t += 1
+if test_episodes > 0:
+    print("Test average score " + str(cumulative_score / test_episodes))
 
 env.close()
