@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import time
+from experienceMemory import ExperienceMemory
+from torch.utils.tensorboard import SummaryWriter
 
 
 # Define reward prediction network
@@ -13,19 +15,24 @@ class AgentTorchDiscrete():
     # ------------------------- Initialization -------------------------
 
     def __init__(self, name, num_of_action_values, state_space_min, state_space_max, reward_space_min, reward_space_max,
-                 discount=0.9999, batch_size=1000, value_learn_rate=0.0001, policy_learn_rate=0.0001, policy_copy_rate=0.0001,
-                 learn_iterations=10, memory_buffer_size=0, next_learn_factor=0.1, debug=False):
+                 batch_size=1000, epoch_size=10000, learn_iterations=10, memory_buffer_size=100000,
+                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_copy_rate=0.0001, next_learn_factor=0.5,
+                 prioritize_weight_exponent=2, prioritize_weight_min=0.5, prioritize_weight_max=5.0, prioritize_weight_copy_rate=0.01,
+                 debug=False):
 
         self.debug = debug
 
-        self.name = name
+        self.name = str(name)
 
-        print('Creating agent ' + str(self.name))
+        print('Creating agent ' + self.name)
 
-        self.value_filename = name + '_value' + '.pt'
-        self.policy_filename = name + '_policy' + '.pt'
-        self.max_policy_filename = name + '_max_policy' + '.pt'
-        self.memory_buffer_filename = name + '_data' + '.pt'
+        self.memory_dir_path = Path.cwd() / 'memory' / name
+        self.value_filename = self.memory_dir_path / 'value.pt'
+        self.policy_filename = self.memory_dir_path / 'policy.pt'
+        self.max_policy_filename = self.memory_dir_path / 'max_policy.pt'
+        self.memory_buffer_filename = self.memory_dir_path / 'data.pt'
+
+        Path(self.memory_dir_path).mkdir(parents=True, exist_ok=True)
 
         self.discount = discount
         self.value_learn_rate = value_learn_rate
@@ -34,7 +41,12 @@ class AgentTorchDiscrete():
         self.learn_iterations = learn_iterations
         self.max_size_of_memory_buffer = memory_buffer_size
         self.batch_size = batch_size
+        self.epoch_size = epoch_size
         self.next_learn_factor = next_learn_factor
+        self.prioritize_weight_exponent = prioritize_weight_exponent
+        self.prioritize_weight_min = prioritize_weight_min
+        self.prioritize_weight_max = prioritize_weight_max
+        self.prioritize_weight_copy_rate = prioritize_weight_copy_rate
 
         # dim1 = variables
         # example [5, 3, 3]
@@ -62,9 +74,14 @@ class AgentTorchDiscrete():
         self.build_value_network()
         self.build_policy_network()
 
-        if self.max_size_of_memory_buffer > 0:
-            self.create_memory_buffer()
-            self.load_memory_buffer()
+        self.memory = ExperienceMemory(self.max_size_of_memory_buffer, self.num_of_states, self.memory_buffer_filename,
+                                       weight_initialization=self.prioritize_weight_max, weight_exponent=self.prioritize_weight_exponent)
+
+        self.tensor_board = SummaryWriter('runs/' + self.name)
+
+        self.epoch_count = 0
+
+        pass
 
     # ------------------------- Externally Callable Functions -------------------------
 
@@ -88,7 +105,6 @@ class AgentTorchDiscrete():
 
         out_action = action_flat.cpu().numpy()
         out_action = self.action_unflatten(out_action)
-        #out_action = np.squeeze(out_action, axis=-1)
 
         return out_action
 
@@ -96,33 +112,26 @@ class AgentTorchDiscrete():
 
         in_state = np.array(in_state, ndmin=2)
         in_state = self.scale(in_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        in_state = torch.from_numpy(in_state).float().detach().to(self.device)
         in_action = np.array(in_action, ndmin=1)
         in_action = self.action_flatten(in_action)
         in_action = np.array(in_action, ndmin=2)
-        in_action = torch.from_numpy(in_action).float().detach().to(self.device)
         in_reward = np.array(in_reward, ndmin=2)
         in_reward = self.scale(in_reward, self.reward_space_min_array, self.reward_space_max_array, -1, 1)
-        in_reward = torch.from_numpy(in_reward).float().detach().to(self.device)
         in_next_state = np.array(in_next_state, ndmin=2)
         in_next_state = self.scale(in_next_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        in_next_state = torch.from_numpy(in_next_state).float().detach().to(self.device)
         in_done = np.array(in_done, ndmin=2)
-        in_done = torch.from_numpy(in_done).float().detach().to(self.device)
-        self.save_memory(in_state, in_action, in_reward, in_next_state, in_done)
+
+        self.memory.add((in_state, in_action, in_reward, in_next_state, in_done), self.prioritize_weight_max)
 
         pass
 
     def learn(self):
 
-        state, action, reward, next_state, done = self.recall_memory()
-
-        print('Agent ' + str(self.name) + ' learning fom ' + str(state.shape[0]) + ' samples')
-
-        trainset = torch.utils.data.TensorDataset(state, action, next_state, done, reward)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, shuffle=True, num_workers=0, pin_memory=False)
+        print('Agent ' + str(self.name) + ' learning fom ' + str(self.memory.len()) + ' samples')
 
         if self.debug: start_time = time.time(); elapsed_time = time.time() - start_time; print('Started at: ' + str(elapsed_time))
+
+        dataset_index = self.memory.prepare_dataset(min(self.epoch_size, self.memory.len()), True)
 
         for epoch in range(self.learn_iterations):
 
@@ -131,53 +140,49 @@ class AgentTorchDiscrete():
             epoch_value_loss = 0.0
             epoch_policy_loss = 0.0
             running_count = 0.0
+            batch_num = 1
 
-            for i, data in enumerate(trainloader, 0):
+            while True:
+
+                index, state, action, reward, next_state, done, last_batch = self.memory.get_batch(dataset_index, self.batch_size, batch_num)
 
                 if self.debug: elapsed_time = time.time() - start_time; print('Begin batch: ' + str(elapsed_time))
-
-                # get the inputs; data is a list of [inputs, labels]
-                in_state, in_action, in_next_state, in_done, out_reward = data
 
                 # set the model to train mode
                 self.value.train()
                 self.max_policy.train()
 
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin forward: ' + str(elapsed_time))
-
                 # forward pass
-                values = self.value(in_state)
-                values_sum = torch.gather(values, 1, in_action.long())
+                if self.debug: elapsed_time = time.time() - start_time; print('Begin forward: ' + str(elapsed_time))
+                values = self.value(state)
+                values_sum = torch.gather(values, 1, action.long())
 
-                max_policy_logits = self.max_policy.forward(in_next_state)
+                max_policy_logits = self.max_policy.forward(next_state)
                 max_policy_probs = F.softmax(max_policy_logits.detach(), dim=1)
-                values_next_with_grad = self.value(in_next_state)
+                values_next_with_grad = self.value(next_state)
                 values_next = self.next_learn_factor * values_next_with_grad \
                               + (1.0 - self.next_learn_factor) * values_next_with_grad.detach()
                 values_next_sum = torch.sum(values_next * max_policy_probs, 1, keepdim=True)
 
-                values_diff = values_sum - values_next_sum * self.discount * (1.0 - in_done)
+                values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
                 policy_ground_truth = torch.argmax(values_next_with_grad.detach(), dim=1)
 
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin opto value: ' + str(elapsed_time))
-
                 # optimize value
+                if self.debug: elapsed_time = time.time() - start_time; print('Begin opto value: ' + str(elapsed_time))
                 self.value_optimizer.zero_grad()
-                value_loss = self.value_criterion(values_diff, out_reward)
+                value_loss = self.value_criterion(values_diff, reward)
                 value_loss.backward(retain_graph=True)
                 self.value_optimizer.step()
 
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin opto policy: ' + str(elapsed_time))
-
                 # optimize max policy
+                if self.debug: elapsed_time = time.time() - start_time; print('Begin opto policy: ' + str(elapsed_time))
                 self.max_policy_optimizer.zero_grad()
                 policy_loss = self.max_policy_criterion(max_policy_logits, policy_ground_truth)
                 policy_loss.backward()
                 self.max_policy_optimizer.step()
 
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin copy policy: ' + str(elapsed_time))
-
                 # copy policy
+                if self.debug: elapsed_time = time.time() - start_time; print('Begin copy policy: ' + str(elapsed_time))
                 policy_dict = self.policy.state_dict()
                 max_policy_dict = self.max_policy.state_dict()
                 for param_name in self.policy.state_dict():
@@ -186,23 +191,44 @@ class AgentTorchDiscrete():
                     pass
                 self.policy.load_state_dict(policy_dict)
 
-                if self.debug: elapsed_time = time.time() - start_time; print('Gather stats: ' + str(elapsed_time))
+                # update weights
+                if self.debug: elapsed_time = time.time() - start_time; print('Update weights: ' + str(elapsed_time))
+                train_weights = abs(reward - values_diff.detach()) * abs(self.reward_space_max_array - self.reward_space_min_array)
+                train_weights_clamped = torch.clamp(train_weights, min=self.prioritize_weight_min, max=self.prioritize_weight_max)
+                self.memory.set_weight(index, train_weights_clamped.float(), self.prioritize_weight_copy_rate)
 
                 # gather statistics
+                if self.debug: elapsed_time = time.time() - start_time; print('Gather stats: ' + str(elapsed_time))
                 epoch_value_loss += value_loss.item()
                 epoch_policy_loss += policy_loss.item()
                 running_count += 1.0
 
                 if self.debug: elapsed_time = time.time() - start_time; print('End batch: ' + str(elapsed_time))
 
+                # check if done
+                if last_batch:
+                    break
+                else:
+                    batch_num += 1
+
+            self.epoch_count += 1
+
             if self.debug: elapsed_time = time.time() - start_time; print('End epoch: ' + str(elapsed_time))
 
-            print('Epoch: ' + str(epoch + 1)
+            print('Epoch: ' + str(self.epoch_count)
                   + ' \t\tvalue loss:' + str(epoch_value_loss / running_count)
                   + ' \t\tpolicy loss:' + str(epoch_policy_loss / running_count))
 
+            self.tensor_board.add_scalar('Loss/value', epoch_value_loss / running_count, self.epoch_count)
+            self.tensor_board.add_scalar('Loss/policy', epoch_policy_loss / running_count, self.epoch_count)
+
+    pass
+
+    def save(self):
+
+        print('Saving network and experience')
         self.save_networks()
-        self.save_memory_buffer()
+        self.memory.save()
 
         pass
 
@@ -229,7 +255,6 @@ class AgentTorchDiscrete():
                 x = F.relu(self.fc3(x))
                 x = F.relu(self.fc4(x))
                 x = self.fc5(x)
-                #x = torch.reshape(x, [state_input.shape[0]] + self.num_of_action_values)
                 return x
 
         self.value = Net(self.num_of_states, self.num_of_action_values).to(self.device)
@@ -238,7 +263,7 @@ class AgentTorchDiscrete():
 
         if value_file.is_file():
             # Load value network
-            print('Loading value network from file ' + self.value_filename)
+            print('Loading value network from file ' + str(self.value_filename))
             self.value.load_state_dict(torch.load(self.value_filename))
 
         else:
@@ -271,7 +296,6 @@ class AgentTorchDiscrete():
                 x = F.relu(self.fc3(x))
                 x = F.relu(self.fc4(x))
                 x = self.fc5(x)
-                #x = torch.reshape(x, [state_input.shape[0]] + self.num_of_action_values)
                 return x
 
         self.policy = Net(self.num_of_states, self.num_of_action_values).to(self.device)
@@ -280,7 +304,7 @@ class AgentTorchDiscrete():
 
         if policy_file.is_file():
             # Load value network
-            print('Loading policy network from file ' + self.policy_filename)
+            print('Loading policy network from file ' + str(self.policy_filename))
             self.policy.load_state_dict(torch.load(self.policy_filename))
 
         else:
@@ -293,7 +317,7 @@ class AgentTorchDiscrete():
 
         if max_policy_file.is_file():
             # Load value network
-            print('Loading max policy network from file ' + self.max_policy_filename)
+            print('Loading max policy network from file ' + str(self.max_policy_filename))
             self.max_policy.load_state_dict(torch.load(self.max_policy_filename))
 
         else:
@@ -313,83 +337,6 @@ class AgentTorchDiscrete():
 
         pass
 
-    # ------------------------- Memory Buffer -------------------------
-
-    def create_memory_buffer(self):
-
-        self.experience_mem_index = 0
-        self.memory_state = torch.empty([self.max_size_of_memory_buffer, self.num_of_states]).to(self.device)
-        self.memory_action = torch.empty([self.max_size_of_memory_buffer, 1]).to(self.device)
-        self.memory_reward = torch.empty([self.max_size_of_memory_buffer, 1]).to(self.device)
-        self.memory_next_state = torch.empty([self.max_size_of_memory_buffer, self.num_of_states]).to(self.device)
-        self.memory_done = torch.empty([self.max_size_of_memory_buffer, 1]).to(self.device)
-
-    def load_memory_buffer(self):
-
-        experience_buffer_file = Path(self.memory_buffer_filename)
-
-        if experience_buffer_file.is_file():
-            # Load experience buffer
-            print('Loading experience buffer from file ' + self.memory_buffer_filename)
-            experience_buffer = torch.load(self.memory_buffer_filename)
-
-            temp = experience_buffer['state']
-            temp_index = temp.shape[0]
-            if temp_index > self.max_size_of_memory_buffer:
-                temp_index = self.max_size_of_memory_buffer
-
-            self.experience_mem_index = temp_index
-            self.memory_state[0:temp_index, :] = experience_buffer['state'][0:temp_index, :]
-            self.memory_action[0:temp_index, :] = experience_buffer['action'][0:temp_index, :]
-            self.memory_reward[0:temp_index, :] = experience_buffer['reward'][0:temp_index, :]
-            self.memory_next_state[0:temp_index, :] = experience_buffer['next_state'][0:temp_index, :]
-            self.memory_done[0:temp_index, :] = experience_buffer['done'][0:temp_index, :]
-
-        else:
-
-            print('No experience buffer to load')
-
-        pass
-
-    def save_memory_buffer(self):
-
-        state, action, reward, next_state, done = self.recall_memory()
-
-        experience_buffer_file = Path(self.memory_buffer_filename)
-        torch.save({'state':state, 'action':action, 'reward':reward, 'next_state':next_state, 'done':done}, experience_buffer_file)
-
-        pass
-
-    def save_memory(self, state, action, reward, next_state, done):
-
-        if self.experience_mem_index >= self.max_size_of_memory_buffer:
-            self.memory_state[:-1, :] = self.memory_state[1:, :].clone()
-            self.memory_action[:-1, :] = self.memory_action[1:, :].clone()
-            self.memory_reward[:-1, :] = self.memory_reward[1:, :].clone()
-            self.memory_next_state[:-1, :] = self.memory_next_state[1:, :].clone()
-            self.memory_done[:-1, :] = self.memory_done[1:, :].clone()
-            self.experience_mem_index -= 1
-
-        index = self.experience_mem_index
-        self.memory_state[index, :] = state
-        self.memory_action[index, :] = action
-        self.memory_reward[index, :] = reward
-        self.memory_next_state[index, :] = next_state
-        self.memory_done[index, :] = done
-        self.experience_mem_index += 1
-
-        pass
-
-    def recall_memory(self):
-
-        index = self.experience_mem_index
-        state = self.memory_state[0:index, :]
-        action = self.memory_action[0:index, :]
-        reward = self.memory_reward[0:index, :]
-        next_state = self.memory_next_state[0:index, :]
-        done = self.memory_done[0:index, :]
-
-        return state, action, reward, next_state, done
 
     # ------------------------- Normalization -------------------------
 
