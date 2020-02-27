@@ -3,7 +3,7 @@ import gym
 import pybullet
 import pybullet_envs
 import pybullet_data
-from agentTorchDiscrete import *
+from agentTorchContinuous import *
 
 #Params
 learn_episodes = 10000
@@ -11,19 +11,18 @@ test_episodes = 200
 learn_interval = 10
 render = True
 delay = 0.0
-save_frequency = 100
+save_frequency = 10
 
 # Run simulation
 env = gym.make('HopperBulletEnv-v0', render=render)
 
-num_of_action_values = [9, 9, 9]
 action_space_min = [-1]*3
 action_space_max = [1]*3
 state_space_min = [-1]*15 + [1]
 state_space_max = [1]*15 + [1000]
 reward_space_min = [-1]
 reward_space_max = [1]
-agent = AgentTorchDiscrete("HopperD2", True, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
+agent = AgentTorchContinuous("HopperC1", action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
                            batch_size=1000, learn_iterations=10, memory_buffer_size=1000*20,
                            discount=0.99, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_copy_rate=0.001, next_learn_factor=0.3,
                            debug=False)

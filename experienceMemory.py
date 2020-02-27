@@ -3,12 +3,12 @@ from pathlib import Path
 import torch
 
 class ExperienceMemory():
-    def __init__(self, max_size, num_of_states, filename, weight_initialization=1, weight_exponent=1):
+    def __init__(self, max_size, num_of_states, num_of_actions, filename, weight_initialization=1, weight_exponent=1):
         self.count = 0
         self.max_size = max_size
         self.weight_exponent = weight_exponent
         self.memory_state = torch.empty([self.max_size, num_of_states], requires_grad=False)
-        self.memory_action = torch.empty([self.max_size, 1], requires_grad=False)
+        self.memory_action = torch.empty([self.max_size, num_of_actions], requires_grad=False)
         self.memory_reward = torch.empty([self.max_size, 1], requires_grad=False)
         self.memory_next_state = torch.empty([self.max_size, num_of_states], requires_grad=False)
         self.memory_done = torch.empty([self.max_size, 1], requires_grad=False)
@@ -48,8 +48,12 @@ class ExperienceMemory():
 
         return state, action, reward, next_state, done
 
-    def prepare_dataset(self, dataset_size, replacement):
-        index = torch.multinomial(self.get_all_weights(), dataset_size, replacement).tolist() # introduces bias to stocastic environments
+    #def prepare_dataset(self, dataset_size, replacement):
+        #index = torch.multinomial(self.get_all_weights(), dataset_size, replacement).tolist() # introduces bias to stocastic environments
+        #return index
+
+    def prepare_dataset(self):
+        index = torch.randperm(self.count)
         return index
 
     def get_batch(self, dataset_index, batch_size, batch_num):
@@ -74,7 +78,14 @@ class ExperienceMemory():
         state, action, reward, next_state, done = item
 
         if self.count >= self.max_size:
-            raise ValueError('Memory buffer overflow.')
+            reduce = self.count - self.max_size + 1
+            self.memory_state[:-reduce, :] = self.memory_state[reduce:, :].clone()
+            self.memory_action[:-reduce, :] = self.memory_action[reduce:, :].clone()
+            self.memory_reward[:-reduce, :] = self.memory_reward[reduce:, :].clone()
+            self.memory_next_state[:-reduce, :] = self.memory_next_state[reduce:, :].clone()
+            self.memory_done[:-reduce, :] = self.memory_done[reduce:, :].clone()
+            self.memory_weight[:-reduce] = self.memory_weight[reduce:].clone()
+            self.count -= reduce
 
         index = self.count
         self.memory_state[index, :] = torch.tensor(state, requires_grad=False)

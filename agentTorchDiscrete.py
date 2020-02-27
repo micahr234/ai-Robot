@@ -4,17 +4,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import time
-from experienceMemory import ExperienceMemory
 from torch.utils.tensorboard import SummaryWriter
+import time
+from experienceMemory import *
+from quantize import *
 
 
-# Define reward prediction network
+# Define agent
 class AgentTorchDiscrete():
 
     # ------------------------- Initialization -------------------------
 
-    def __init__(self, name, num_of_action_values, state_space_min, state_space_max, reward_space_min, reward_space_max,
+    def __init__(self, name, quantize_actions, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
                  batch_size=1000, epoch_size=10000, learn_iterations=10, memory_buffer_size=100000,
                  discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_copy_rate=0.0001, next_learn_factor=0.5,
                  prioritize_weight_exponent=2, prioritize_weight_min=0.5, prioritize_weight_max=5.0, prioritize_weight_copy_rate=0.01,
@@ -26,13 +27,22 @@ class AgentTorchDiscrete():
 
         print('Creating agent ' + self.name)
 
-        self.memory_dir_path = Path.cwd() / 'memory' / name
-        self.value_filename = self.memory_dir_path / 'value.pt'
-        self.policy_filename = self.memory_dir_path / 'policy.pt'
-        self.max_policy_filename = self.memory_dir_path / 'max_policy.pt'
-        self.memory_buffer_filename = self.memory_dir_path / 'data.pt'
+        self.memory_dir = Path.cwd() / 'memory' / name
+        Path(self.memory_dir).mkdir(parents=True, exist_ok=True)
 
-        Path(self.memory_dir_path).mkdir(parents=True, exist_ok=True)
+        self.value_filename = self.memory_dir / 'value.pt'
+        self.policy_filename = self.memory_dir / 'policy.pt'
+        self.max_policy_filename = self.memory_dir / 'max_policy.pt'
+        self.memory_buffer_filename = self.memory_dir / 'memory.pt'
+        self.train_state_filename = self.memory_dir / 'train_state.pt'
+
+        run_ID = 0
+        while True:
+            run_ID += 1
+            self.run_ID = str(run_ID)
+            self.runs_dir = Path.cwd() / 'runs' / (self.name + '_run' + self.run_ID)
+            if not self.runs_dir.is_dir():
+                break
 
         self.discount = discount
         self.value_learn_rate = value_learn_rate
@@ -50,19 +60,28 @@ class AgentTorchDiscrete():
 
         # dim1 = variables
         # example [5, 3, 3]
-        self.num_of_action_values = num_of_action_values
-        self.num_of_actions = len(self.num_of_action_values)
+        self.quantize_actions = quantize_actions
+        if self.quantize_actions:
+            self.num_of_action_values = num_of_action_values
+            self.num_of_actions = len(self.num_of_action_values)
+            self.action_space_min = action_space_min
+            self.action_space_max = action_space_max
+            self.action_space_min_array = np.array(self.action_space_min)
+            self.action_space_max_array = np.array(self.action_space_max)
+        else:
+            self.num_of_action_values = num_of_action_values
+            self.num_of_actions = len(self.num_of_action_values)
 
         # dim1 = min/max of each variables
         # example [10,2,100]
         self.state_space_min = state_space_min
         self.state_space_max = state_space_max
-        self.num_of_states = len(self.state_space_min)
+        self.num_of_states = len(self.state_space_max)
         self.state_space_min_array = np.array(self.state_space_min)
         self.state_space_max_array = np.array(self.state_space_max)
 
         # dim1 = min/max of each variables
-        # example [10,2,100]
+        # example [100]
         self.reward_space_min = reward_space_min
         self.reward_space_max = reward_space_max
         self.reward_space_min_array = np.array(self.reward_space_min)
@@ -74,12 +93,14 @@ class AgentTorchDiscrete():
         self.build_value_network()
         self.build_policy_network()
 
-        self.memory = ExperienceMemory(self.max_size_of_memory_buffer, self.num_of_states, self.memory_buffer_filename,
+        self.memory = ExperienceMemory(self.max_size_of_memory_buffer, self.num_of_states, 1, self.memory_buffer_filename,
                                        weight_initialization=self.prioritize_weight_max, weight_exponent=self.prioritize_weight_exponent)
 
-        self.tensor_board = SummaryWriter('runs/' + self.name)
+        self.tensor_board = SummaryWriter(self.runs_dir)
 
-        self.epoch_count = 0
+        self.learn_epoch_count = 1
+        self.record_count = 1
+        self.cumulative_reward = 0
 
         pass
 
@@ -106,22 +127,40 @@ class AgentTorchDiscrete():
         out_action = action_flat.cpu().numpy()
         out_action = self.action_unflatten(out_action)
 
+        if self.quantize_actions:
+            out_action = unquantize(out_action, self.action_space_min_array, self.action_space_max_array, self.num_of_action_values)
+
         return out_action
 
-    def record(self, in_state, in_action, in_reward, in_next_state, in_done, in_timestep):
+    def record(self, in_state, in_action, in_reward, in_next_state, in_done):
 
-        in_state = np.array(in_state, ndmin=2)
-        in_state = self.scale(in_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        in_action = np.array(in_action, ndmin=1)
-        in_action = self.action_flatten(in_action)
-        in_action = np.array(in_action, ndmin=2)
-        in_reward = np.array(in_reward, ndmin=2)
-        in_reward = self.scale(in_reward, self.reward_space_min_array, self.reward_space_max_array, -1, 1)
-        in_next_state = np.array(in_next_state, ndmin=2)
-        in_next_state = self.scale(in_next_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        in_done = np.array(in_done, ndmin=2)
+        state = np.array(in_state, ndmin=2)
+        state = self.scale(state, self.state_space_min_array, self.state_space_max_array, -1, 1)
 
-        self.memory.add((in_state, in_action, in_reward, in_next_state, in_done), self.prioritize_weight_max)
+        action = np.array(in_action, ndmin=1)
+        if self.quantize_actions:
+            action = quantize(action, self.action_space_min_array, self.action_space_max_array, self.num_of_action_values)
+        action = self.action_flatten(action)
+        action = np.array(action, ndmin=2)
+
+        reward = np.array(in_reward, ndmin=2)
+        reward = self.scale(reward, self.reward_space_min_array, self.reward_space_max_array, -1, 1)
+
+        next_state = np.array(in_next_state, ndmin=2)
+        next_state = self.scale(next_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
+
+        done = np.array(in_done, ndmin=2)
+
+        self.memory.add((state, action, reward, next_state, done), self.prioritize_weight_max)
+
+        self.tensor_board.add_scalar('Experience/reward', in_reward, self.record_count)
+
+        self.cumulative_reward += in_reward
+        if in_done:
+            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
+            self.cumulative_reward = 0
+
+        self.record_count += 1
 
         pass
 
@@ -131,7 +170,7 @@ class AgentTorchDiscrete():
 
         if self.debug: start_time = time.time(); elapsed_time = time.time() - start_time; print('Started at: ' + str(elapsed_time))
 
-        dataset_index = self.memory.prepare_dataset(min(self.epoch_size, self.memory.len()), True)
+        #dataset_index = self.memory.prepare_dataset(min(self.epoch_size, self.memory.len()), True)
 
         for epoch in range(self.learn_iterations):
 
@@ -141,6 +180,8 @@ class AgentTorchDiscrete():
             epoch_policy_loss = 0.0
             running_count = 0.0
             batch_num = 1
+
+            dataset_index = self.memory.prepare_dataset()
 
             while True:
 
@@ -192,10 +233,10 @@ class AgentTorchDiscrete():
                 self.policy.load_state_dict(policy_dict)
 
                 # update weights
-                if self.debug: elapsed_time = time.time() - start_time; print('Update weights: ' + str(elapsed_time))
-                train_weights = abs(reward - values_diff.detach()) * abs(self.reward_space_max_array - self.reward_space_min_array)
-                train_weights_clamped = torch.clamp(train_weights, min=self.prioritize_weight_min, max=self.prioritize_weight_max)
-                self.memory.set_weight(index, train_weights_clamped.float(), self.prioritize_weight_copy_rate)
+                #if self.debug: elapsed_time = time.time() - start_time; print('Update weights: ' + str(elapsed_time))
+                #train_weights = abs(reward - values_diff.detach()) * abs(self.reward_space_max_array - self.reward_space_min_array)
+                #train_weights_clamped = torch.clamp(train_weights, min=self.prioritize_weight_min, max=self.prioritize_weight_max)
+                #self.memory.set_weight(index, train_weights_clamped.float(), self.prioritize_weight_copy_rate)
 
                 # gather statistics
                 if self.debug: elapsed_time = time.time() - start_time; print('Gather stats: ' + str(elapsed_time))
@@ -211,16 +252,16 @@ class AgentTorchDiscrete():
                 else:
                     batch_num += 1
 
-            self.epoch_count += 1
-
             if self.debug: elapsed_time = time.time() - start_time; print('End epoch: ' + str(elapsed_time))
 
-            print('Epoch: ' + str(self.epoch_count)
+            print('Epoch: ' + str(self.learn_epoch_count)
                   + ' \t\tvalue loss:' + str(epoch_value_loss / running_count)
                   + ' \t\tpolicy loss:' + str(epoch_policy_loss / running_count))
 
-            self.tensor_board.add_scalar('Loss/value', epoch_value_loss / running_count, self.epoch_count)
-            self.tensor_board.add_scalar('Loss/policy', epoch_policy_loss / running_count, self.epoch_count)
+            self.tensor_board.add_scalar('Loss/value', epoch_value_loss / running_count, self.learn_epoch_count)
+            self.tensor_board.add_scalar('Loss/policy', epoch_policy_loss / running_count, self.learn_epoch_count)
+
+            self.learn_epoch_count += 1
 
     pass
 
@@ -259,9 +300,7 @@ class AgentTorchDiscrete():
 
         self.value = Net(self.num_of_states, self.num_of_action_values).to(self.device)
 
-        value_file = Path(self.value_filename)
-
-        if value_file.is_file():
+        if self.value_filename.is_file():
             # Load value network
             print('Loading value network from file ' + str(self.value_filename))
             self.value.load_state_dict(torch.load(self.value_filename))
@@ -300,9 +339,7 @@ class AgentTorchDiscrete():
 
         self.policy = Net(self.num_of_states, self.num_of_action_values).to(self.device)
 
-        policy_file = Path(self.policy_filename)
-
-        if policy_file.is_file():
+        if self.policy_filename.is_file():
             # Load value network
             print('Loading policy network from file ' + str(self.policy_filename))
             self.policy.load_state_dict(torch.load(self.policy_filename))
@@ -313,9 +350,7 @@ class AgentTorchDiscrete():
 
         self.max_policy = Net(self.num_of_states, self.num_of_action_values).to(self.device)
 
-        max_policy_file = Path(self.max_policy_filename)
-
-        if max_policy_file.is_file():
+        if self.max_policy_filename.is_file():
             # Load value network
             print('Loading max policy network from file ' + str(self.max_policy_filename))
             self.max_policy.load_state_dict(torch.load(self.max_policy_filename))
