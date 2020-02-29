@@ -1,18 +1,19 @@
 import numpy as np
 from pathlib import Path
 import torch
+from collections import namedtuple
+import random
 
 class ExperienceMemory():
-    def __init__(self, max_size, num_of_states, num_of_actions, filename, weight_initialization=1, weight_exponent=1):
+
+    def __init__(self, max_size, num_of_states, num_of_actions, filename):
         self.count = 0
         self.max_size = max_size
-        self.weight_exponent = weight_exponent
         self.memory_state = torch.empty([self.max_size, num_of_states], requires_grad=False)
         self.memory_action = torch.empty([self.max_size, num_of_actions], requires_grad=False)
         self.memory_reward = torch.empty([self.max_size, 1], requires_grad=False)
         self.memory_next_state = torch.empty([self.max_size, num_of_states], requires_grad=False)
         self.memory_done = torch.empty([self.max_size, 1], requires_grad=False)
-        self.memory_weight = torch.ones([self.max_size], requires_grad=False) * weight_initialization
 
         self.filename = filename
         file = Path(self.filename)
@@ -48,10 +49,6 @@ class ExperienceMemory():
 
         return state, action, reward, next_state, done
 
-    #def prepare_dataset(self, dataset_size, replacement):
-        #index = torch.multinomial(self.get_all_weights(), dataset_size, replacement).tolist() # introduces bias to stocastic environments
-        #return index
-
     def prepare_dataset(self):
         index = torch.randperm(self.count)
         return index
@@ -74,8 +71,7 @@ class ExperienceMemory():
     def len(self):
         return self.count
 
-    def add(self, item, weight):
-        state, action, reward, next_state, done = item
+    def add(self, state, action, reward, next_state, done):
 
         if self.count >= self.max_size:
             reduce = self.count - self.max_size + 1
@@ -84,7 +80,6 @@ class ExperienceMemory():
             self.memory_reward[:-reduce, :] = self.memory_reward[reduce:, :].clone()
             self.memory_next_state[:-reduce, :] = self.memory_next_state[reduce:, :].clone()
             self.memory_done[:-reduce, :] = self.memory_done[reduce:, :].clone()
-            self.memory_weight[:-reduce] = self.memory_weight[reduce:].clone()
             self.count -= reduce
 
         index = self.count
@@ -93,7 +88,6 @@ class ExperienceMemory():
         self.memory_reward[index, :] = torch.tensor(reward, requires_grad=False)
         self.memory_next_state[index, :] = torch.tensor(next_state, requires_grad=False)
         self.memory_done[index, :] = torch.tensor(done, requires_grad=False)
-        self.memory_weight[index] = torch.tensor(weight, requires_grad=False)
         self.count += 1
         pass
 
@@ -104,15 +98,45 @@ class ExperienceMemory():
         torch.save({'state': state, 'action': action, 'reward': reward, 'next_state': next_state, 'done': done}, file)
         pass
 
-    def get_weight(self, index):
-        weight = self.memory_weight[index]
-        return weight
 
-    def get_all_weights(self):
-        index = range(self.count)
-        weights = self.get_weight(index)
-        return weights
+Transition = namedtuple('Transition',('state', 'action', 'reward', 'next_state', 'done'))
 
-    def set_weight(self, index, weight, factor):
-        self.memory_weight[index] = (torch.squeeze(weight, dim=-1)**self.weight_exponent) * factor + self.memory_weight[index] * (1.0-factor)
+class ExperienceMemoryNew():
+
+    def __init__(self, capacity, filename):
+
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
+
+        self.filename = Path(filename)
+
+        if self.filename.is_file():
+            # Load experience buffer
+            print('Loading experience buffer from file ' + str(self.filename))
+            buffer = torch.load(self.filename)
+            self.memory = buffer['memory']
+            del self.memory[capacity:]
+        else:
+            print('No experience buffer to load')
+
+        pass
+
+    def sample(self, batch_size):
+        transitions = random.sample(self.memory, batch_size)
+        batch = Transition(*zip(*transitions))
+        return batch
+
+    def __len__(self):
+        return len(self.memory)
+
+    def add(self, *args):
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = Transition(*args)
+        self.position = (self.position + 1) % self.capacity
+        pass
+
+    def save(self):
+        torch.save({'memory': self.memory}, self.filename)
         pass

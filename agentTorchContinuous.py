@@ -1,9 +1,6 @@
 import numpy as np
 from pathlib import Path
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import time
 from experienceMemory import *
@@ -14,10 +11,9 @@ class AgentTorchContinuous():
 
     # ------------------------- Initialization -------------------------
 
-    def __init__(self, name, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
-                 batch_size=1000, epoch_size=10000, learn_iterations=10, memory_buffer_size=100000,
-                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_copy_rate=0.0001, next_learn_factor=0.5,
-                 prioritize_weight_exponent=2, prioritize_weight_min=0.5, prioritize_weight_max=5.0, prioritize_weight_copy_rate=0.01,
+    def __init__(self, name, action_type,  num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
+                 batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
+                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_copy_rate=0.0001, next_learn_factor=0.5, action_grad_max=0.01,
                  debug=False):
 
         self.debug = debug
@@ -50,12 +46,9 @@ class AgentTorchContinuous():
         self.learn_iterations = learn_iterations
         self.max_size_of_memory_buffer = memory_buffer_size
         self.batch_size = batch_size
-        self.epoch_size = epoch_size
         self.next_learn_factor = next_learn_factor
-        self.prioritize_weight_exponent = prioritize_weight_exponent
-        self.prioritize_weight_min = prioritize_weight_min
-        self.prioritize_weight_max = prioritize_weight_max
-        self.prioritize_weight_copy_rate = prioritize_weight_copy_rate
+        self.unquantize_actions = True if action_type == 'discrete' else False
+        self.action_grad_max = action_grad_max
 
         # dim1 = variables
         # example [5, 3, 3]
@@ -86,13 +79,13 @@ class AgentTorchContinuous():
         self.build_value_network()
         self.build_policy_network()
 
-        self.memory = ExperienceMemory(self.max_size_of_memory_buffer, self.num_of_states, self.num_of_actions, self.memory_buffer_filename,
-                                       weight_initialization=self.prioritize_weight_max, weight_exponent=self.prioritize_weight_exponent)
+        self.memory = ExperienceMemoryNew(self.max_size_of_memory_buffer, self.memory_buffer_filename)
 
         self.tensor_board = SummaryWriter(self.runs_dir)
 
-        self.learn_epoch_count = 1
+        self.learn_count = 1
         self.record_count = 1
+        self.record_episode_count = 1
         self.cumulative_reward = 0
 
         pass
@@ -121,130 +114,135 @@ class AgentTorchContinuous():
 
     def record(self, in_state, in_action, in_reward, in_next_state, in_done):
 
+        # Log experience
+        if self.debug:
+            for n in range(self.num_of_states):
+                self.tensor_board.add_scalar('Experience/state' + str(n), in_state[n], self.record_count)
+                self.tensor_board.add_scalar('Experience/next_state' + str(n), in_next_state[n], self.record_count)
+            for n in range(self.num_of_actions):
+                self.tensor_board.add_scalar('Experience/action' + str(n), in_action[n], self.record_count)
+            self.tensor_board.add_scalar('Experience/reward', in_reward, self.record_count)
+            self.tensor_board.add_scalar('Experience/in_done', in_done, self.record_count)
+
+        self.cumulative_reward += in_reward
+        if in_done:
+            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward,
+                                         self.record_episode_count)
+            self.record_episode_count += 1
+            self.cumulative_reward = 0
+
+        self.record_count += 1
+
+        # Save memory
         state = np.array(in_state, ndmin=2)
         state = self.scale(state, self.state_space_min_array, self.state_space_max_array, -1, 1)
+        state = torch.tensor(state, dtype=torch.float32)
 
         action = np.array(in_action, ndmin=1)
         action = self.scale(action, self.action_space_min_array, self.action_space_max_array, -1, 1)
         action = np.array(action, ndmin=2)
+        action = torch.tensor(action, dtype=torch.float32)
 
         reward = np.array(in_reward, ndmin=2)
         reward = self.scale(reward, self.reward_space_min_array, self.reward_space_max_array, -1, 1)
+        reward = torch.tensor(reward, dtype=torch.float32)
 
         next_state = np.array(in_next_state, ndmin=2)
         next_state = self.scale(next_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
+        next_state = torch.tensor(next_state, dtype=torch.float32)
 
         done = np.array(in_done, ndmin=2)
+        done = torch.tensor(done, dtype=torch.float32)
 
-        self.memory.add((state, action, reward, next_state, done), self.prioritize_weight_max)
-
-        self.tensor_board.add_scalar('Experience/reward', in_reward, self.record_count)
-
-        self.cumulative_reward += in_reward
-        if in_done:
-            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
-            self.cumulative_reward = 0
-
-        self.record_count += 1
+        self.memory.add(state, action, reward, next_state, done)
 
         pass
 
     def learn(self):
 
-        print('Agent ' + str(self.name) + ' learning fom ' + str(self.memory.len()) + ' samples')
+        if len(self.memory) < self.batch_size:
+            print('Agent waiting for more samples to learn from')
+            return
+        else:
+            print('Agent ' + str(self.name) + ' learning fom ' + str(len(self.memory)) + ' samples')
 
-        if self.debug: start_time = time.time(); elapsed_time = time.time() - start_time; print('Started at: ' + str(elapsed_time))
+        for batch_num in range(1, self.learn_iterations + 1):
 
-        #dataset_index = self.memory.prepare_dataset(min(self.epoch_size, self.memory.len()), True)
+            if self.debug:
+                start_time = time.time()
 
-        for epoch in range(self.learn_iterations):
+            batch = self.memory.sample(self.batch_size)
+            state = torch.cat(batch.state)
+            action = torch.cat(batch.action)
+            reward = torch.cat(batch.reward)
+            next_state = torch.cat(batch.next_state)
+            done = torch.cat(batch.done)
 
-            if self.debug: elapsed_time = time.time() - start_time; print('Begin epoch: ' + str(elapsed_time))
+            if self.debug:
+                elapsed_time = time.time() - start_time
+                self.tensor_board.add_scalar('Time/get_memory', elapsed_time, self.learn_count)
+                start_time = time.time()
 
-            epoch_value_loss = 0.0
-            epoch_policy_loss = 0.0
-            running_count = 0.0
-            batch_num = 1
+            # set the model to train mode
+            self.value.train()
+            self.max_policy.train()
 
-            dataset_index = self.memory.prepare_dataset()
+            # forward pass
+            values = self.value(state, action)
+            max_policy_actions = self.max_policy.forward(next_state)
+            max_policy_actions.register_hook(lambda grad: torch.clamp(grad, -self.action_grad_max, self.action_grad_max))
+            values_next_with_grad = self.value(next_state, max_policy_actions)
+            values_next = self.next_learn_factor * values_next_with_grad \
+                          + (1.0 - self.next_learn_factor) * values_next_with_grad.detach()
+            network_reward = values - values_next * self.discount * (1.0 - done)
 
-            while True:
+            if self.debug:
+                elapsed_time = time.time() - start_time
+                self.tensor_board.add_scalar('Time/foward_pass', elapsed_time, self.learn_count)
+                start_time = time.time()
 
-                index, state, action, reward, next_state, done, last_batch = self.memory.get_batch(dataset_index, self.batch_size, batch_num)
+            # optimize value
+            self.value_optimizer.zero_grad()
+            value_loss = self.value_criterion(network_reward, reward)
+            value_loss.backward(retain_graph=True)
+            self.value_optimizer.step()
 
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin batch: ' + str(elapsed_time))
+            if self.debug:
+                elapsed_time = time.time() - start_time
+                self.tensor_board.add_scalar('Time/optimize_value', elapsed_time, self.learn_count)
+                start_time = time.time()
 
-                # set the model to train mode
-                self.value.train()
-                self.max_policy.train()
+            # optimize max policy
+            self.max_policy_optimizer.zero_grad()
+            policy_loss = self.max_policy_criterion(values_next_with_grad)
+            policy_loss.backward()
+            self.max_policy_optimizer.step()
 
-                # forward pass
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin forward: ' + str(elapsed_time))
-                values = self.value(state, action)
+            if self.debug:
+                elapsed_time = time.time() - start_time
+                self.tensor_board.add_scalar('Time/optimize_policy', elapsed_time, self.learn_count)
+                start_time = time.time()
 
-                max_policy_actions = self.max_policy.forward(next_state)
-                values_next_with_grad = self.value(next_state, max_policy_actions)
-                values_next = self.next_learn_factor * values_next_with_grad \
-                              + (1.0 - self.next_learn_factor) * values_next_with_grad.detach()
+            # log results
+            print('Batch: ' + str(batch_num)
+                  + ' \t\tvalue loss:' + str(value_loss.item())
+                  + ' \t\tpolicy loss:' + str(policy_loss.item()))
 
-                values_diff = values - values_next * self.discount * (1.0 - done)
+            self.tensor_board.add_scalar('Loss/value', value_loss.item(), self.learn_count)
+            self.tensor_board.add_scalar('Loss/policy', policy_loss.item(), self.learn_count)
 
-                # optimize value
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin opto value: ' + str(elapsed_time))
-                self.value_optimizer.zero_grad()
-                value_loss = self.value_criterion(values_diff, reward)
-                value_loss.backward(retain_graph=True)
-                self.value_optimizer.step()
+            self.learn_count += 1
 
-                # optimize max policy
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin opto policy: ' + str(elapsed_time))
-                self.max_policy_optimizer.zero_grad()
-                policy_loss = self.max_policy_criterion(values_next_with_grad)
-                policy_loss.backward()
-                self.max_policy_optimizer.step()
+        # copy policy
+        policy_dict = self.policy.state_dict()
+        max_policy_dict = self.max_policy.state_dict()
+        for param_name in self.policy.state_dict():
+            policy_dict[param_name] = (1 - self.policy_copy_rate) * policy_dict[
+                param_name] + self.policy_copy_rate * max_policy_dict[param_name]
+            pass
+        self.policy.load_state_dict(policy_dict)
 
-                # copy policy
-                if self.debug: elapsed_time = time.time() - start_time; print('Begin copy policy: ' + str(elapsed_time))
-                policy_dict = self.policy.state_dict()
-                max_policy_dict = self.max_policy.state_dict()
-                for param_name in self.policy.state_dict():
-                    policy_dict[param_name] = (1 - self.policy_copy_rate) * policy_dict[
-                        param_name] + self.policy_copy_rate * max_policy_dict[param_name]
-                    pass
-                self.policy.load_state_dict(policy_dict)
-
-                # update weights
-                #if self.debug: elapsed_time = time.time() - start_time; print('Update weights: ' + str(elapsed_time))
-                #train_weights = abs(reward - values_diff.detach()) * abs(self.reward_space_max_array - self.reward_space_min_array)
-                #train_weights_clamped = torch.clamp(train_weights, min=self.prioritize_weight_min, max=self.prioritize_weight_max)
-                #self.memory.set_weight(index, train_weights_clamped.float(), self.prioritize_weight_copy_rate)
-
-                # gather statistics
-                if self.debug: elapsed_time = time.time() - start_time; print('Gather stats: ' + str(elapsed_time))
-                epoch_value_loss += value_loss.item()
-                epoch_policy_loss += policy_loss.item()
-                running_count += 1.0
-
-                if self.debug: elapsed_time = time.time() - start_time; print('End batch: ' + str(elapsed_time))
-
-                # check if done
-                if last_batch:
-                    break
-                else:
-                    batch_num += 1
-
-            if self.debug: elapsed_time = time.time() - start_time; print('End epoch: ' + str(elapsed_time))
-
-            print('Epoch: ' + str(self.learn_epoch_count)
-                  + ' \t\tvalue loss:' + str(epoch_value_loss / running_count)
-                  + ' \t\tpolicy loss:' + str(epoch_policy_loss / running_count))
-
-            self.tensor_board.add_scalar('Loss/value', epoch_value_loss / running_count, self.learn_epoch_count)
-            self.tensor_board.add_scalar('Loss/policy', epoch_policy_loss / running_count, self.learn_epoch_count)
-
-            self.learn_epoch_count += 1
-
-    pass
+        pass
 
     def save(self):
 
@@ -260,22 +258,22 @@ class AgentTorchContinuous():
 
         print('Building value network')
 
-        class Net(nn.Module):
+        class Net(torch.nn.Module):
 
             def __init__(self, num_of_states, num_of_actions):
                 super(Net, self).__init__()
-                self.fc1 = nn.Linear(num_of_states + num_of_actions, 256)
-                self.fc2 = nn.Linear(256, 128)
-                self.fc3 = nn.Linear(128, 64)
-                self.fc4 = nn.Linear(64, 32)
-                self.fc5 = nn.Linear(32, 1)
+                self.fc1 = torch.nn.Linear(num_of_states + num_of_actions, 256)
+                self.fc2 = torch.nn.Linear(256, 128)
+                self.fc3 = torch.nn.Linear(128, 64)
+                self.fc4 = torch.nn.Linear(64, 32)
+                self.fc5 = torch.nn.Linear(32, 1)
 
             def forward(self, state_input, action_input):
                 x = torch.cat((state_input, action_input), 1)
-                x = F.relu(self.fc1(x))
-                x = F.relu(self.fc2(x))
-                x = F.relu(self.fc3(x))
-                x = F.relu(self.fc4(x))
+                x = torch.nn.functional.relu(self.fc1(x))
+                x = torch.nn.functional.relu(self.fc2(x))
+                x = torch.nn.functional.relu(self.fc3(x))
+                x = torch.nn.functional.relu(self.fc4(x))
                 x = self.fc5(x)
                 return x
 
@@ -290,8 +288,8 @@ class AgentTorchContinuous():
             # Build value network
             print('No value network loaded from file')
 
-        self.value_criterion = nn.MSELoss()
-        self.value_optimizer = optim.Adam(self.value.parameters(), lr=self.value_learn_rate)
+        self.value_criterion = torch.nn.MSELoss()
+        self.value_optimizer = torch.optim.Adam(self.value.parameters(), lr=self.value_learn_rate)
 
         pass
 
@@ -299,21 +297,21 @@ class AgentTorchContinuous():
 
         print('Building policy network')
 
-        class Net(nn.Module):
+        class Net(torch.nn.Module):
 
             def __init__(self, num_of_states, num_of_actions):
                 super(Net, self).__init__()
-                self.fc1 = nn.Linear(num_of_states, 256)
-                self.fc2 = nn.Linear(256, 128)
-                self.fc3 = nn.Linear(128, 64)
-                self.fc4 = nn.Linear(64, 32)
-                self.fc5 = nn.Linear(32, num_of_actions)
+                self.fc1 = torch.nn.Linear(num_of_states, 256)
+                self.fc2 = torch.nn.Linear(256, 128)
+                self.fc3 = torch.nn.Linear(128, 64)
+                self.fc4 = torch.nn.Linear(64, 32)
+                self.fc5 = torch.nn.Linear(32, num_of_actions)
 
             def forward(self, state_input):
-                x = F.relu(self.fc1(state_input))
-                x = F.relu(self.fc2(x))
-                x = F.relu(self.fc3(x))
-                x = F.relu(self.fc4(x))
+                x = torch.nn.functional.relu(self.fc1(state_input))
+                x = torch.nn.functional.relu(self.fc2(x))
+                x = torch.nn.functional.relu(self.fc3(x))
+                x = torch.nn.functional.relu(self.fc4(x))
                 x = self.fc5(x)
                 return x
 
@@ -344,7 +342,7 @@ class AgentTorchContinuous():
             return loss
 
         self.max_policy_criterion = maximize_loss
-        self.max_policy_optimizer = optim.Adam(self.max_policy.parameters(), lr=self.policy_learn_rate)
+        self.max_policy_optimizer = torch.optim.Adam(self.max_policy.parameters(), lr=self.policy_learn_rate)
 
         pass
 
