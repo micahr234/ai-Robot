@@ -6,35 +6,31 @@ import random
 
 class ExperienceMemory():
 
-    def __init__(self, max_size, num_of_states, num_of_actions, filename):
-        self.count = 0
-        self.max_size = max_size
-        self.memory_state = torch.empty([self.max_size, num_of_states], requires_grad=False)
-        self.memory_action = torch.empty([self.max_size, num_of_actions], requires_grad=False)
-        self.memory_reward = torch.empty([self.max_size, 1], requires_grad=False)
-        self.memory_next_state = torch.empty([self.max_size, num_of_states], requires_grad=False)
-        self.memory_done = torch.empty([self.max_size, 1], requires_grad=False)
+    def __init__(self, capacity, filename, num_of_states, num_of_actions):
+        self.position = 0
+        self.length = 0
+        self.capacity = capacity
+        self.memory_state = torch.empty([self.capacity, num_of_states], requires_grad=False)
+        self.memory_action = torch.empty([self.capacity, num_of_actions], requires_grad=False)
+        self.memory_reward = torch.empty([self.capacity, 1], requires_grad=False)
+        self.memory_next_state = torch.empty([self.capacity, num_of_states], requires_grad=False)
+        self.memory_done = torch.empty([self.capacity, 1], requires_grad=False)
 
-        self.filename = filename
-        file = Path(self.filename)
+        self.filename = Path(filename)
 
-        if file.is_file():
+        if self.filename.is_file():
             # Load experience buffer
             print('Loading experience buffer from file ' + str(self.filename))
             buffer = torch.load(self.filename)
 
-            temp = buffer['state']
-            temp_index = temp.shape[0]
-            if temp_index > self.max_size:
-                temp_index = self.max_size
-
-            self.count = temp_index
-            self.memory_state[0:temp_index, :] = buffer['state'][0:temp_index, :]
-            self.memory_action[0:temp_index, :] = buffer['action'][0:temp_index, :]
-            self.memory_reward[0:temp_index, :] = buffer['reward'][0:temp_index, :]
-            self.memory_next_state[0:temp_index, :] = buffer['next_state'][0:temp_index, :]
-            self.memory_done[0:temp_index, :] = buffer['done'][0:temp_index, :]
-
+            self.position = min(self.capacity, buffer['position'])
+            self.length = min(self.capacity, buffer['length'])
+            index = self.length
+            self.memory_state[0:index, :] = buffer['state'][0:index, :]
+            self.memory_action[0:index, :] = buffer['action'][0:index, :]
+            self.memory_reward[0:index, :] = buffer['reward'][0:index, :]
+            self.memory_next_state[0:index, :] = buffer['next_state'][0:index, :]
+            self.memory_done[0:index, :] = buffer['done'][0:index, :]
         else:
             print('No experience buffer to load')
 
@@ -46,56 +42,31 @@ class ExperienceMemory():
         reward = self.memory_reward[index, :]
         next_state = self.memory_next_state[index, :]
         done = self.memory_done[index, :]
-
         return state, action, reward, next_state, done
 
-    def prepare_dataset(self):
-        index = torch.randperm(self.count)
-        return index
+    def sample(self, batch_size):
+        index = torch.randint(0, self.length, (batch_size,))
+        state, action, reward, next_state, done = self.get(index)
+        return state, action, reward, next_state, done
 
-    def get_batch(self, dataset_index, batch_size, batch_num):
-        batch_start = (batch_num-1)*batch_size
-        batch_end = batch_num*batch_size
-        dataset_length = len(dataset_index)
-        if batch_end >= dataset_length:
-            batch_end = dataset_length
-            last_batch = True
-        else:
-            last_batch = False
-        batch_index = dataset_index[batch_start:batch_end]
-
-        state, action, reward, next_state, done = self.get(batch_index)
-
-        return batch_index, state, action, reward, next_state, done, last_batch
-
-    def len(self):
-        return self.count
+    def __len__(self):
+        return self.length
 
     def add(self, state, action, reward, next_state, done):
-
-        if self.count >= self.max_size:
-            reduce = self.count - self.max_size + 1
-            self.memory_state[:-reduce, :] = self.memory_state[reduce:, :].clone()
-            self.memory_action[:-reduce, :] = self.memory_action[reduce:, :].clone()
-            self.memory_reward[:-reduce, :] = self.memory_reward[reduce:, :].clone()
-            self.memory_next_state[:-reduce, :] = self.memory_next_state[reduce:, :].clone()
-            self.memory_done[:-reduce, :] = self.memory_done[reduce:, :].clone()
-            self.count -= reduce
-
-        index = self.count
-        self.memory_state[index, :] = torch.tensor(state, requires_grad=False)
-        self.memory_action[index, :] = torch.tensor(action, requires_grad=False)
-        self.memory_reward[index, :] = torch.tensor(reward, requires_grad=False)
-        self.memory_next_state[index, :] = torch.tensor(next_state, requires_grad=False)
-        self.memory_done[index, :] = torch.tensor(done, requires_grad=False)
-        self.count += 1
+        index = self.position
+        self.memory_state[index, :] = torch.tensor(state, dtype=torch.float32)
+        self.memory_action[index, :] = torch.tensor(action, dtype=torch.float32)
+        self.memory_reward[index, :] = torch.tensor(reward, dtype=torch.float32)
+        self.memory_next_state[index, :] = torch.tensor(next_state, dtype=torch.float32)
+        self.memory_done[index, :] = torch.tensor(done, dtype=torch.float32)
+        self.position = (self.position + 1) % self.capacity
+        self.length = min(self.capacity, self.length + 1)
         pass
 
     def save(self):
-        index = range(self.count)
+        index = range(self.length)
         state, action, reward, next_state, done = self.get(index)
-        file = Path(self.filename)
-        torch.save({'state': state, 'action': action, 'reward': reward, 'next_state': next_state, 'done': done}, file)
+        torch.save({'state': state, 'action': action, 'reward': reward, 'next_state': next_state, 'done': done, 'length': self.length, 'position': self.position}, self.filename)
         pass
 
 

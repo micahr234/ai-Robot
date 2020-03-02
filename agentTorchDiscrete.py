@@ -84,13 +84,12 @@ class AgentTorchDiscrete():
         self.build_value_network()
         self.build_policy_network()
 
-        self.memory = ExperienceMemoryNew(self.max_size_of_memory_buffer, self.memory_buffer_filename)
+        self.memory = ExperienceMemory(self.max_size_of_memory_buffer, self.memory_buffer_filename, self.num_of_states, 1)
 
         self.tensor_board = SummaryWriter(self.runs_dir)
 
         self.learn_count = 1
         self.record_count = 1
-        self.record_episode_count = 1
         self.cumulative_reward = 0
 
         pass
@@ -137,9 +136,7 @@ class AgentTorchDiscrete():
 
         self.cumulative_reward += in_reward
         if in_done:
-            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward,
-                                         self.record_episode_count)
-            self.record_episode_count += 1
+            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
             self.cumulative_reward = 0
 
         self.record_count += 1
@@ -147,25 +144,20 @@ class AgentTorchDiscrete():
         # Save memory
         state = np.array(in_state, ndmin=2)
         state = self.scale(state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        state = torch.tensor(state, dtype=torch.float32)
 
         action = np.array(in_action, ndmin=1)
         if self.quantize_actions:
             action = quantize(action, self.action_space_min_array, self.action_space_max_array, self.num_of_action_values)
         action = self.action_flatten(action)
         action = np.array(action, ndmin=2)
-        action = torch.tensor(action, dtype=torch.float32)
 
         reward = np.array(in_reward, ndmin=2)
         reward = self.scale(reward, self.reward_space_min_array, self.reward_space_max_array, -1, 1)
-        reward = torch.tensor(reward, dtype=torch.float32)
 
         next_state = np.array(in_next_state, ndmin=2)
         next_state = self.scale(next_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        next_state = torch.tensor(next_state, dtype=torch.float32)
 
         done = np.array(in_done, ndmin=2)
-        done = torch.tensor(done, dtype=torch.float32)
 
         self.memory.add(state, action, reward, next_state, done)
 
@@ -181,20 +173,7 @@ class AgentTorchDiscrete():
 
         for batch_num in range(1, self.learn_iterations + 1):
 
-            if self.debug:
-                start_time = time.time()
-
-            batch = self.memory.sample(self.batch_size)
-            state = torch.cat(batch.state)
-            action = torch.cat(batch.action)
-            reward = torch.cat(batch.reward)
-            next_state = torch.cat(batch.next_state)
-            done = torch.cat(batch.done)
-
-            if self.debug:
-                elapsed_time = time.time() - start_time
-                self.tensor_board.add_scalar('Time/get_memory', elapsed_time, self.learn_count)
-                start_time = time.time()
+            state, action, reward, next_state, done = self.memory.sample(self.batch_size)
 
             # set the model to train mode
             self.value.train()
@@ -214,32 +193,17 @@ class AgentTorchDiscrete():
             values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
             policy_ground_truth = torch.argmax(values_next_with_grad.detach(), dim=1)
 
-            if self.debug:
-                elapsed_time = time.time() - start_time
-                self.tensor_board.add_scalar('Time/foward_pass', elapsed_time, self.learn_count)
-                start_time = time.time()
-
             # optimize value
             self.value_optimizer.zero_grad()
             value_loss = self.value_criterion(values_diff, reward)
             value_loss.backward(retain_graph=True)
             self.value_optimizer.step()
 
-            if self.debug:
-                elapsed_time = time.time() - start_time
-                self.tensor_board.add_scalar('Time/optimize_value', elapsed_time, self.learn_count)
-                start_time = time.time()
-
             # optimize max policy
             self.max_policy_optimizer.zero_grad()
             policy_loss = self.max_policy_criterion(max_policy_logits, policy_ground_truth)
             policy_loss.backward()
             self.max_policy_optimizer.step()
-
-            if self.debug:
-                elapsed_time = time.time() - start_time
-                self.tensor_board.add_scalar('Time/optimize_policy', elapsed_time, self.learn_count)
-                start_time = time.time()
 
             # log results
             print('Batch: ' + str(batch_num)

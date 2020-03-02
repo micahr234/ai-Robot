@@ -5,13 +5,14 @@ import pybullet_envs
 import pybullet_data
 from agentTorchDiscrete import *
 from agentTorchContinuous import *
+import cProfile
 
 #Params
-name = "HopperAgentDD3"
+name = "HopperAgentDC5"
 agent_type = 'discrete'
 action_type = 'continuous'
 
-learn_episodes = 100000
+learn_episodes = 1000000
 test_episodes = 0
 learn_interval = 10
 batch_size = 1000
@@ -23,7 +24,7 @@ policy_learn_rate = value_learn_rate/80
 policy_copy_rate = 1.0
 next_learn_factor = 0.1
 action_grad_max = 1000
-save_frequency = learn_interval*10
+save_frequency = learn_interval
 
 num_of_action_values = [9, 9, 9] # For discrete environments only
 action_space_min = [-1]*3
@@ -54,6 +55,10 @@ elif agent_type == 'continuous':
                                debug=debug)
 
 cumulative_score = 0
+
+#pr = cProfile.Profile()
+#pr.enable()
+
 for n in range(1, learn_episodes + test_episodes + 1):
 
     learning = n <= learn_episodes
@@ -95,7 +100,11 @@ for n in range(1, learn_episodes + test_episodes + 1):
 
         time.sleep(delay)
 
+#pr.disable()
+
 if test_episodes > 0:
     print("Test average score " + str(cumulative_score / test_episodes))
 
 env.close()
+
+#pr.dump_stats('profile.dat')
