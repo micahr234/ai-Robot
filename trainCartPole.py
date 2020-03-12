@@ -8,40 +8,41 @@ from agentTorchContinuous import *
 import cProfile
 
 #Params
-name = "CartPole-ProfileTest"
-agent_type = 'discrete'
+name = "CartPole-1nextstate"
+agent_type = 'continuous'
 action_type = 'continuous'
 
-learn_episodes = 100
+#learn_episodes = 500
+#test_episodes = 0
+#learn_interval = 10
+#batch_size = 1000
+#learn_iterations = learn_interval*10
+#memory_buffer_size = batch_size*100
+#discount = 0.999
+#value_learn_rate = 0.001
+#policy_learn_rate = value_learn_rate/40
+#policy_copy_rate = 1.0
+#next_learn_factor = 0.1
+#action_grad_max = 1000
+#save_frequency = learn_interval
+
+learn_episodes = 5000
 test_episodes = 0
 learn_interval = 10
 batch_size = 1000
 learn_iterations = learn_interval*10
 memory_buffer_size = batch_size*100
 discount = 0.999
-value_learn_rate = 0.0005
-policy_learn_rate = value_learn_rate/80
+value_learn_rate = 0.001
+value_copy_rate = 0.01
+policy_learn_rate = value_learn_rate/400
 policy_copy_rate = 1.0
-next_learn_factor = 0.1
+next_learn_factor = 0.0
 action_grad_max = 1000
 save_frequency = learn_interval
 
-#learn_episodes = 5000
-#test_episodes = 0
-#learn_interval = 20
-#batch_size = 1000
-#learn_iterations = learn_interval*10
-#memory_buffer_size = batch_size*learn_interval
-#discount = 0.999
-#value_learn_rate = 0.001
-#policy_learn_rate = value_learn_rate/100
-#policy_copy_rate = 0.1
-#next_learn_factor = 0.1
-#action_grad_max = 1000
-#save_frequency = learn_interval
-
-num_of_action_values = [9] # For discrete environments only
-#num_of_action_values = [2]
+#num_of_action_values = [9] # For discrete environments only
+num_of_action_values = [1]
 action_space_min = [-10]
 action_space_max = [10]
 state_space_min = [-1, -1, -1, -1, 0]
@@ -60,13 +61,15 @@ env = gym.make('CartPoleBulletEnv-v1', renders=render, discrete_actions=discrete
 if agent_type == 'discrete':
     agent = AgentTorchDiscrete(name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
                                batch_size=batch_size, learn_iterations=learn_iterations, memory_buffer_size=memory_buffer_size,
-                               discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
+                               discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate,
+                               value_copy_rate=value_copy_rate, policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
                                debug=debug)
 
 elif agent_type == 'continuous':
     agent = AgentTorchContinuous(name, action_type, None, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
                                batch_size=batch_size, learn_iterations=learn_iterations, memory_buffer_size=memory_buffer_size,
-                               discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
+                               discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate,
+                               value_copy_rate=value_copy_rate, policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
                                action_grad_max=action_grad_max,
                                debug=debug)
 

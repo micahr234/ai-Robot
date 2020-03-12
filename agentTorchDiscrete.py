@@ -32,20 +32,12 @@ class AgentTorchDiscrete():
         self.memory_buffer_filename = self.memory_dir / 'memory.pt'
         self.train_state_filename = self.memory_dir / 'train_state.pt'
 
-        run_ID = 0
-        while True:
-            run_ID += 1
-            self.run_ID = str(run_ID)
-            self.runs_dir = Path.cwd() / 'runs' / (self.name + '_run' + self.run_ID)
-            if not self.runs_dir.is_dir():
-                break
-
         self.discount = discount
         self.value_learn_rate = value_learn_rate
         self.policy_copy_rate = policy_copy_rate
         self.policy_learn_rate = policy_learn_rate
         self.learn_iterations = learn_iterations
-        self.max_size_of_memory_buffer = memory_buffer_size
+        self.memory_buffer_size = memory_buffer_size
         self.batch_size = batch_size
         self.next_learn_factor = next_learn_factor
         self.quantize_actions = True if action_type == 'continuous' else False
@@ -84,12 +76,26 @@ class AgentTorchDiscrete():
         self.build_value_network()
         self.build_policy_network()
 
-        self.memory = ExperienceMemory(self.max_size_of_memory_buffer, self.memory_buffer_filename, self.num_of_states, 1)
+        self.memory = ExperienceMemory(self.memory_buffer_size, self.memory_buffer_filename, self.num_of_states, 1)
 
-        self.tensor_board = SummaryWriter(self.runs_dir)
+        self.tensor_board_dir = Path.cwd() / 'runs' / name / str(time.time())
+        self.tensor_board = SummaryWriter(self.tensor_board_dir)
+        hyper_params = {'agent_type': 'discrete',
+                        'quantize_actions': self.quantize_actions,
+                        'batch_size': self.batch_size,
+                        'learn_iterations': self.learn_iterations,
+                        'memory_buffer_size': self.memory_buffer_size,
+                        'discount': self.discount,
+                        'value_learn_rate': self.value_learn_rate,
+                        'policy_learn_rate': self.policy_learn_rate,
+                        'value_copy_rate': self.value_copy_rate,
+                        'policy_copy_rate': self.policy_copy_rate,
+                        'next_learn_factor': self.next_learn_factor}
+        self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
         self.learn_count = 1
         self.record_count = 1
+        self.record_done_count = 1
         self.cumulative_reward = 0
 
         pass
@@ -107,9 +113,9 @@ class AgentTorchDiscrete():
 
         with torch.no_grad():
             if use_max_policy:
-                policy_logits = self.max_policy.forward(state)[0]
+                policy_logits = self.max_policy(state)[0]
             else:
-                policy_logits = self.policy.forward(state)[0]
+                policy_logits = self.policy(state)[0]
 
             policy_probs_flat = torch.nn.functional.softmax(policy_logits, dim=-1)
             action_flat = torch.multinomial(policy_probs_flat, 1, replacement=True)
@@ -137,7 +143,9 @@ class AgentTorchDiscrete():
         self.cumulative_reward += in_reward
         if in_done:
             self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
+            self.tensor_board.add_scalar('Experience/interactions', self.record_count, self.record_done_count)
             self.cumulative_reward = 0
+            self.record_done_count += 1
 
         self.record_count += 1
 
@@ -183,12 +191,14 @@ class AgentTorchDiscrete():
             values = self.value(state)
             values_sum = torch.gather(values, 1, action.long())
 
-            max_policy_logits = self.max_policy.forward(next_state)
+            max_policy_logits = self.max_policy(next_state)
             max_policy_probs = torch.nn.functional.softmax(max_policy_logits.detach(), dim=1)
             values_next_with_grad = self.value(next_state)
             values_next = self.next_learn_factor * values_next_with_grad \
                           + (1.0 - self.next_learn_factor) * values_next_with_grad.detach()
             values_next_sum = torch.sum(values_next * max_policy_probs, 1, keepdim=True)
+            #max_action = torch.argmax(max_policy_probs, axis=-1, keepdim=True)
+            #values_next_sum = torch.gather(values_next, 1, max_action)
 
             values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
             policy_ground_truth = torch.argmax(values_next_with_grad.detach(), dim=1)
@@ -200,6 +210,7 @@ class AgentTorchDiscrete():
             self.value_optimizer.step()
 
             # optimize max policy
+            #--------------need to look at wether to use state or next state to optimize policy
             self.max_policy_optimizer.zero_grad()
             policy_loss = self.max_policy_criterion(max_policy_logits, policy_ground_truth)
             policy_loss.backward()
@@ -216,13 +227,8 @@ class AgentTorchDiscrete():
             self.learn_count += 1
 
         # copy policy
-        policy_dict = self.policy.state_dict()
-        max_policy_dict = self.max_policy.state_dict()
-        for param_name in self.policy.state_dict():
-            policy_dict[param_name] = (1 - self.policy_copy_rate) * policy_dict[
-                param_name] + self.policy_copy_rate * max_policy_dict[param_name]
-            pass
-        self.policy.load_state_dict(policy_dict)
+        for target_param, param in zip(self.policy.parameters(), self.max_policy.parameters()):
+            target_param.data.copy_(self.policy_copy_rate * param.data + (1.0 - self.policy_copy_rate) * target_param.data)
 
     pass
 
