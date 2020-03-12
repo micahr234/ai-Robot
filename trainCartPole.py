@@ -8,7 +8,7 @@ from agentTorchContinuous import *
 import cProfile
 
 #Params
-name = "CartPole-1nextstate"
+name = "CartPole-5"
 agent_type = 'continuous'
 action_type = 'continuous'
 
@@ -33,12 +33,12 @@ batch_size = 1000
 learn_iterations = learn_interval*10
 memory_buffer_size = batch_size*100
 discount = 0.999
-value_learn_rate = 0.001
-value_copy_rate = 0.01
-policy_learn_rate = value_learn_rate/400
+value_learn_rate = 0.0001
+value_copy_rate = 1.0
+policy_learn_rate = value_learn_rate/10
 policy_copy_rate = 1.0
-next_learn_factor = 0.0
-action_grad_max = 1000
+next_learn_factor = 1.0
+action_grad_max = value_learn_rate/100*5
 save_frequency = learn_interval
 
 #num_of_action_values = [9] # For discrete environments only

@@ -180,25 +180,24 @@ class AgentTorchContinuous():
             # forward pass
             values = self.value(state, action)
             max_policy_actions = self.max_policy(next_state)
-            #max_policy_actions.register_hook(lambda grad: torch.clamp(grad, -self.action_grad_max, self.action_grad_max))
-            values_next_with_grad = self.target_value(next_state, max_policy_actions)
-            values_next = self.next_learn_factor * values_next_with_grad \
-                          + (1.0 - self.next_learn_factor) * values_next_with_grad.detach()
+            values_next = self.target_value(next_state, max_policy_actions)
             values_diff = values - values_next * self.discount * (1.0 - done)
 
             # optimize value
+            hook_handle = values_next.register_hook(lambda grad: grad * self.next_learn_factor)
             self.value_optimizer.zero_grad()
             value_loss = self.value_criterion(values_diff, reward)
             value_loss.backward(retain_graph=True)
             self.value_optimizer.step()
+            hook_handle.remove()
 
             # optimize max policy
-            #test = self.max_policy(state)
-            #test2 = self.target_value(state, test)
+            hook_handle = max_policy_actions.register_hook(lambda grad: torch.clamp(grad, -self.action_grad_max, self.action_grad_max))
             self.max_policy_optimizer.zero_grad()
-            policy_loss = self.max_policy_criterion(values_next_with_grad)
+            policy_loss = self.max_policy_criterion(values_next)
             policy_loss.backward()
             self.max_policy_optimizer.step()
+            hook_handle.remove()
 
             # log results
             print('Batch: ' + str(batch_num)
