@@ -88,7 +88,6 @@ class AgentTorchDiscrete():
                         'discount': self.discount,
                         'value_learn_rate': self.value_learn_rate,
                         'policy_learn_rate': self.policy_learn_rate,
-                        'value_copy_rate': self.value_copy_rate,
                         'policy_copy_rate': self.policy_copy_rate,
                         'next_learn_factor': self.next_learn_factor}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
@@ -104,9 +103,9 @@ class AgentTorchDiscrete():
 
     def act(self, in_state, use_max_policy=False):
 
-        in_state = np.array(in_state, ndmin=2)
-        in_state = self.scale(in_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        state = torch.from_numpy(in_state).float().detach().to(self.device)
+        state = np.array(in_state, ndmin=2)
+        state = self.scale(state, self.state_space_min_array, self.state_space_max_array, -1, 1)
+        state = torch.from_numpy(state).float().detach().to(self.device)
 
         self.policy.eval()
         self.max_policy.eval()
@@ -142,7 +141,7 @@ class AgentTorchDiscrete():
 
         self.cumulative_reward += in_reward
         if in_done:
-            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
+            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_done_count)
             self.tensor_board.add_scalar('Experience/interactions', self.record_count, self.record_done_count)
             self.cumulative_reward = 0
             self.record_done_count += 1
@@ -190,27 +189,22 @@ class AgentTorchDiscrete():
             # forward pass
             values = self.value(state)
             values_sum = torch.gather(values, 1, action.long())
-
             max_policy_logits = self.max_policy(next_state)
             max_policy_probs = torch.nn.functional.softmax(max_policy_logits.detach(), dim=1)
-            values_next_with_grad = self.value(next_state)
-            values_next = self.next_learn_factor * values_next_with_grad \
-                          + (1.0 - self.next_learn_factor) * values_next_with_grad.detach()
+            values_next = self.value(next_state)
             values_next_sum = torch.sum(values_next * max_policy_probs, 1, keepdim=True)
-            #max_action = torch.argmax(max_policy_probs, axis=-1, keepdim=True)
-            #values_next_sum = torch.gather(values_next, 1, max_action)
-
             values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
-            policy_ground_truth = torch.argmax(values_next_with_grad.detach(), dim=1)
+            policy_ground_truth = torch.argmax(values_next, dim=1).detach()
 
             # optimize value
+            values_next_hook = values_next.register_hook(lambda grad: grad * self.next_learn_factor)
             self.value_optimizer.zero_grad()
             value_loss = self.value_criterion(values_diff, reward)
             value_loss.backward(retain_graph=True)
             self.value_optimizer.step()
+            values_next_hook.remove()
 
             # optimize max policy
-            #--------------need to look at wether to use state or next state to optimize policy
             self.max_policy_optimizer.zero_grad()
             policy_loss = self.max_policy_criterion(max_policy_logits, policy_ground_truth)
             policy_loss.backward()

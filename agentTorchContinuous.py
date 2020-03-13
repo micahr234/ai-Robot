@@ -102,9 +102,9 @@ class AgentTorchContinuous():
 
     def act(self, in_state, use_max_policy=False):
 
-        in_state = np.array(in_state, ndmin=2)
-        in_state = self.scale(in_state, self.state_space_min_array, self.state_space_max_array, -1, 1)
-        state = torch.from_numpy(in_state).float().detach().to(self.device)
+        state = np.array(in_state, ndmin=2)
+        state = self.scale(state, self.state_space_min_array, self.state_space_max_array, -1, 1)
+        state = torch.from_numpy(state).float().detach().to(self.device)
 
         self.policy.eval()
         self.max_policy.eval()
@@ -184,20 +184,20 @@ class AgentTorchContinuous():
             values_diff = values - values_next * self.discount * (1.0 - done)
 
             # optimize value
-            hook_handle = values_next.register_hook(lambda grad: grad * self.next_learn_factor)
+            values_next_hook = values_next.register_hook(lambda grad: grad * self.next_learn_factor)
             self.value_optimizer.zero_grad()
             value_loss = self.value_criterion(values_diff, reward)
             value_loss.backward(retain_graph=True)
             self.value_optimizer.step()
-            hook_handle.remove()
+            values_next_hook.remove()
 
             # optimize max policy
-            hook_handle = max_policy_actions.register_hook(lambda grad: torch.clamp(grad, -self.action_grad_max, self.action_grad_max))
+            max_policy_actions_hook = max_policy_actions.register_hook(lambda grad: torch.clamp(grad, -self.action_grad_max, self.action_grad_max))
             self.max_policy_optimizer.zero_grad()
             policy_loss = self.max_policy_criterion(values_next)
             policy_loss.backward()
             self.max_policy_optimizer.step()
-            hook_handle.remove()
+            max_policy_actions_hook.remove()
 
             # log results
             print('Batch: ' + str(batch_num)
