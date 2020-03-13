@@ -8,8 +8,7 @@ from agentTorchContinuous import *
 import cProfile
 
 #Params
-name = "HopperAgentDC5"
-agent_type = 'discrete'
+name = "HopperContinuous"
 action_type = 'continuous'
 
 learn_episodes = 1000000
@@ -41,18 +40,11 @@ debug = False
 # Run simulation
 env = gym.make('HopperBulletEnv-v0', render=render)
 
-if agent_type == 'discrete':
-    agent = AgentTorchDiscrete(name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
-                               batch_size=batch_size, learn_iterations=learn_iterations, memory_buffer_size=memory_buffer_size,
-                               discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
-                               debug=debug)
-
-elif agent_type == 'continuous':
-    agent = AgentTorchContinuous(name, action_type, None, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
-                               batch_size=batch_size, learn_iterations=learn_iterations, memory_buffer_size=memory_buffer_size,
-                               discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
-                               action_grad_max=action_grad_max,
-                               debug=debug)
+agent = AgentTorchContinuous(name, action_type, None, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
+                           batch_size=batch_size, learn_iterations=learn_iterations, memory_buffer_size=memory_buffer_size,
+                           discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
+                           action_grad_max=action_grad_max,
+                           debug=debug)
 
 cumulative_score = 0
 

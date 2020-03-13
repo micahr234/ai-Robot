@@ -14,7 +14,7 @@ class AgentTorchDiscrete():
 
     def __init__(self, name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
                  batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
-                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_copy_rate=0.0001, next_learn_factor=0.5,
+                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_copy_rate=1.0, next_learn_factor=0.0, action_grad_max=float('inf'),
                  debug=False):
 
         self.debug = debug
@@ -41,6 +41,7 @@ class AgentTorchDiscrete():
         self.batch_size = batch_size
         self.next_learn_factor = next_learn_factor
         self.quantize_actions = True if action_type == 'continuous' else False
+        self.action_grad_max = action_grad_max
 
         # dim1 = variables
         # example [5, 3, 3]
@@ -89,7 +90,8 @@ class AgentTorchDiscrete():
                         'value_learn_rate': self.value_learn_rate,
                         'policy_learn_rate': self.policy_learn_rate,
                         'policy_copy_rate': self.policy_copy_rate,
-                        'next_learn_factor': self.next_learn_factor}
+                        'next_learn_factor': self.next_learn_factor,
+                        'action_grad_max': self.action_grad_max}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
         self.learn_count = 1
@@ -190,11 +192,12 @@ class AgentTorchDiscrete():
             values = self.value(state)
             values_sum = torch.gather(values, 1, action.long())
             max_policy_logits = self.max_policy(next_state)
-            max_policy_probs = torch.nn.functional.softmax(max_policy_logits.detach(), dim=1)
+            #max_policy_probs = torch.nn.functional.softmax(max_policy_logits.detach(), dim=1)
+            max_policy_probs = torch.nn.functional.softmax(max_policy_logits, dim=1)
             values_next = self.value(next_state)
             values_next_sum = torch.sum(values_next * max_policy_probs, 1, keepdim=True)
             values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
-            policy_ground_truth = torch.argmax(values_next, dim=1).detach()
+            #policy_ground_truth = torch.argmax(values_next, dim=1).detach()
 
             # optimize value
             values_next_hook = values_next.register_hook(lambda grad: grad * self.next_learn_factor)
@@ -205,10 +208,13 @@ class AgentTorchDiscrete():
             values_next_hook.remove()
 
             # optimize max policy
+            max_policy_probs_hook = max_policy_probs.register_hook(lambda grad: torch.clamp(grad, -self.action_grad_max, self.action_grad_max))
             self.max_policy_optimizer.zero_grad()
-            policy_loss = self.max_policy_criterion(max_policy_logits, policy_ground_truth)
+            #policy_loss = self.max_policy_criterion(max_policy_logits, policy_ground_truth)
+            policy_loss = self.max_policy_criterion(values_next_sum)
             policy_loss.backward()
             self.max_policy_optimizer.step()
+            max_policy_probs_hook.remove()
 
             # log results
             print('Batch: ' + str(batch_num)
@@ -320,7 +326,12 @@ class AgentTorchDiscrete():
             # Build value network
             print('No max policy network loaded from file')
 
-        self.max_policy_criterion = torch.nn.CrossEntropyLoss()
+        def maximize_loss(output):
+            loss = -torch.mean(output)
+            return loss
+
+        #self.max_policy_criterion = torch.nn.CrossEntropyLoss()
+        self.max_policy_criterion = maximize_loss
         self.max_policy_optimizer = torch.optim.Adam(self.max_policy.parameters(), lr=self.policy_learn_rate)
 
         pass

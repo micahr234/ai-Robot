@@ -8,24 +8,25 @@ from agentTorchContinuous import *
 import cProfile
 
 #Params
-name = "CartPoleDiscrete-201"
+name = "CartPoleDiscrete-11"
 action_type = 'continuous'
 
-learn_episodes = 5000
+learn_episodes = 300
 test_episodes = 0
 learn_interval = 10
-batch_size = 1000 #500
-learn_iterations = learn_interval*10 #20
+batch_size = 500
+learn_iterations = learn_interval*20
 memory_buffer_size = batch_size*100
 discount = 0.999
-value_learn_rate = 0.001 #0.001
-policy_learn_rate = value_learn_rate/20 #20
+value_learn_rate = 0.001
+policy_learn_rate = value_learn_rate/20
 policy_copy_rate = 1.0
-next_learn_factor = 0.8 #0.8
+next_learn_factor = 0.8
+action_grad_max = 10000
 save_frequency = learn_interval
 
 #num_of_action_values = [2] # For discrete environments
-num_of_action_values = [1000] # For continuous environments
+num_of_action_values = [5000] # For continuous environments
 action_space_min = [-10]
 action_space_max = [10]
 state_space_min = [-1, -1, -1, -1, 0]
@@ -45,6 +46,7 @@ agent = AgentTorchDiscrete(name, action_type, num_of_action_values, action_space
                            batch_size=batch_size, learn_iterations=learn_iterations, memory_buffer_size=memory_buffer_size,
                            discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate,
                            policy_copy_rate=policy_copy_rate, next_learn_factor=next_learn_factor,
+                           action_grad_max=action_grad_max,
                            debug=debug)
 
 cumulative_score = 0

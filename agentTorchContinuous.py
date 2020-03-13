@@ -13,7 +13,7 @@ class AgentTorchContinuous():
 
     def __init__(self, name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
                  batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
-                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, value_copy_rate=0.0001, policy_copy_rate=0.0001, next_learn_factor=0.5, action_grad_max=0.01,
+                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, value_copy_rate=1.0, policy_copy_rate=1.0, next_learn_factor=0.0, action_grad_max=float('inf'),
                  debug=False):
 
         self.debug = debug
@@ -325,7 +325,6 @@ class AgentTorchContinuous():
 
         def maximize_loss(output):
             loss = -torch.mean(output)
-            #loss = torch.mean(output)
             return loss
 
         self.max_policy_criterion = maximize_loss
