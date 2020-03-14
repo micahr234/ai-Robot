@@ -93,7 +93,6 @@ class AgentTorchContinuous():
 
         self.learn_count = 1
         self.record_count = 1
-        self.record_done_count = 1
         self.cumulative_reward = 0
 
         pass
@@ -134,10 +133,8 @@ class AgentTorchContinuous():
 
         self.cumulative_reward += in_reward
         if in_done:
-            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_done_count)
-            self.tensor_board.add_scalar('Experience/interactions', self.record_count, self.record_done_count)
+            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
             self.cumulative_reward = 0
-            self.record_done_count += 1
 
         self.record_count += 1
 

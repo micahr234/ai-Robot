@@ -8,25 +8,24 @@ from agentTorchContinuous import *
 import cProfile
 
 #Params
-name = "CartPoleDiscrete-11"
+name = "CartPoleDiscrete-5"
 action_type = 'continuous'
 
-learn_episodes = 300
-test_episodes = 0
-learn_interval = 10
+max_timestep = 50000
+learn_interval = 10*200
 batch_size = 500
-learn_iterations = learn_interval*20
-memory_buffer_size = batch_size*100
+learn_iterations = 200
+memory_buffer_size = 50000
 discount = 0.999
 value_learn_rate = 0.001
 policy_learn_rate = value_learn_rate/20
 policy_copy_rate = 1.0
 next_learn_factor = 0.8
 action_grad_max = 10000
-save_frequency = learn_interval
+save_interval = learn_interval
 
 #num_of_action_values = [2] # For discrete environments
-num_of_action_values = [5000] # For continuous environments
+num_of_action_values = [3] # For continuous environments
 action_space_min = [-10]
 action_space_max = [10]
 state_space_min = [-1, -1, -1, -1, 0]
@@ -50,56 +49,41 @@ agent = AgentTorchDiscrete(name, action_type, num_of_action_values, action_space
                            debug=debug)
 
 cumulative_score = 0
+done = True
 
-#pr = cProfile.Profile()
-#pr.enable()
+# pr = cProfile.Profile()
+# pr.enable()
 
-for n in range(1, learn_episodes + test_episodes + 1):
+for timestep in range(1, max_timestep + 1):
 
-    learning = n <= learn_episodes
-    testing = not learning
+    if done:
+        score = 0
+        episode_timestep = 0
 
-    score = 0
-    timestep = 0
-
-    next_observation_partial = env.reset()
-    next_observation = np.concatenate((next_observation_partial, np.array(timestep, ndmin=1)))
-    if render: env.render()
-
-    while True:
-
-        timestep += 1
-        observation = next_observation
-
-        action = agent.act(observation, use_max_policy=testing)
-        next_observation_partial, reward, done, info = env.step(action)
-        next_observation = np.concatenate((next_observation_partial, np.array(timestep, ndmin=1)))
-        if learning:
-            agent.record(observation, action, reward, next_observation, done)
-        score += reward
-
+        next_observation_partial = env.reset()
+        next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
         if render: env.render()
 
-        if done:
+    episode_timestep += 1
+    observation = next_observation
 
-            if learning:
-                print("Learn episode " + str(n) + " finished after " + str(timestep) + " timesteps - reward = " + str(score))
-                if ((n % learn_interval) == 0) or n == learn_episodes: agent.learn()
-                if ((n % save_frequency) == 0) or n == learn_episodes: agent.save()
+    action = agent.act(observation)
+    next_observation_partial, reward, done, info = env.step(action)
+    next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
+    agent.record(observation, action, reward, next_observation, done)
+    score += reward
 
-            else:
-                print("Test episode " + str(n) + " finished after " + str(timestep) + " timesteps - reward = " + str(score))
-                cumulative_score += score
+    if render: env.render()
+    if render: time.sleep(delay)
 
-            break
+    if done: print(
+        "Episode " + str(timestep) + " finished after " + str(episode_timestep) + " timesteps - reward = " + str(score))
 
-        time.sleep(delay)
+    if (timestep % learn_interval) == 0: agent.learn()
+    if (timestep % save_interval) == 0: agent.save()
 
-#pr.disable()
+agent.save()
 
-if test_episodes > 0:
-    print("Test average score " + str(cumulative_score / test_episodes))
-
+# pr.disable()
 env.close()
-
-#pr.dump_stats('profile.dat')
+# pr.dump_stats('profile.dat')
