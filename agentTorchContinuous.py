@@ -5,6 +5,7 @@ from torch.utils.tensorboard import SummaryWriter
 import time
 from experienceMemory import *
 
+#Add tanh to output to limit output
 
 # Define agent
 class AgentTorchContinuous():
@@ -76,7 +77,7 @@ class AgentTorchContinuous():
         self.memory = ExperienceMemory(self.memory_buffer_size, self.memory_buffer_filename, self.num_of_states, self.num_of_actions)
 
         self.tensor_board_dir = Path.cwd() / 'runs' / name / str(time.time())
-        self.tensor_board = SummaryWriter(self.tensor_board_dir)
+        self.tensor_board = SummaryWriter(self.tensor_board_dir, max_queue=10000, flush_secs=30)
         hyper_params = {'agent_type': 'continuous',
                         'unquantize_actions': self.unquantize_actions,
                         'batch_size': self.batch_size,
@@ -160,7 +161,7 @@ class AgentTorchContinuous():
 
     def learn(self):
 
-        if len(self.memory) < self.batch_size:
+        if len(self.memory) < self.memory_buffer_size:
             print('Agent waiting for more samples to learn from')
             return
         else:

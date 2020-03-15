@@ -14,7 +14,7 @@ action_type = 'continuous'
 max_timestep = 50000
 learn_interval = 10*200
 batch_size = 1000
-learn_iterations = 200
+learn_iterations = int(100000/batch_size)
 memory_buffer_size = 50000
 discount = 0.999
 value_learn_rate = 0.0001
@@ -48,7 +48,6 @@ agent = AgentTorchContinuous(name, action_type, None, action_space_min, action_s
                            action_grad_max=action_grad_max,
                            debug=debug)
 
-cumulative_score = 0
 done = True
 
 # pr = cProfile.Profile()
@@ -57,27 +56,27 @@ done = True
 for timestep in range(1, max_timestep + 1):
 
     if done:
-        score = 0
-        episode_timestep = 0
-
+        episode_timestep = 1
+        episode_cumulative_reward = 0
         next_observation_partial = env.reset()
         next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
         if render: env.render()
+        if render: time.sleep(delay)
 
-    episode_timestep += 1
     observation = next_observation
 
     action = agent.act(observation)
     next_observation_partial, reward, done, info = env.step(action)
     next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
     agent.record(observation, action, reward, next_observation, done)
-    score += reward
+
+    episode_timestep += 1
+    episode_cumulative_reward += reward
+
+    if done: print('Episode finished\t\tEpisode timestep: ' + str(episode_timestep) + '\t\tTimestep: ' + str(timestep) + '\t\tTotal reward: ' + str(episode_cumulative_reward))
 
     if render: env.render()
     if render: time.sleep(delay)
-
-    if done: print(
-        "Episode " + str(timestep) + " finished after " + str(episode_timestep) + " timesteps - reward = " + str(score))
 
     if (timestep % learn_interval) == 0: agent.learn()
     if (timestep % save_interval) == 0: agent.save()
