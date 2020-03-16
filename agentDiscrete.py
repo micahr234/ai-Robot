@@ -4,17 +4,17 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 import time
 from experienceMemory import *
+from quantize import *
 
-#Add tanh to output to limit output
 
 # Define agent
-class AgentTorchContinuous():
+class AgentDiscrete():
 
     # ------------------------- Initialization -------------------------
 
     def __init__(self, name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
-                 batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
-                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, value_copy_rate=1.0, policy_copy_rate=1.0, next_learn_factor=0.0, action_grad_max=float('inf'),
+                 batch_size=1000, learn_iterations=10, memory_buffer_size=100000, exploration_factor=1.0,
+                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, next_learn_factor=0.0,
                  debug=False):
 
         self.debug = debug
@@ -27,31 +27,31 @@ class AgentTorchContinuous():
         Path(self.memory_dir).mkdir(parents=True, exist_ok=True)
 
         self.value_filename = self.memory_dir / 'value.pt'
-        self.target_value_filename = self.memory_dir / 'target_value.pt'
         self.policy_filename = self.memory_dir / 'policy.pt'
-        self.max_policy_filename = self.memory_dir / 'max_policy.pt'
         self.memory_buffer_filename = self.memory_dir / 'memory.pt'
-        self.train_state_filename = self.memory_dir / 'train_state.pt'
 
         self.discount = discount
-        self.value_copy_rate = value_copy_rate
         self.value_learn_rate = value_learn_rate
-        self.policy_copy_rate = policy_copy_rate
         self.policy_learn_rate = policy_learn_rate
         self.learn_iterations = learn_iterations
         self.memory_buffer_size = memory_buffer_size
         self.batch_size = batch_size
         self.next_learn_factor = next_learn_factor
-        self.unquantize_actions = True if action_type == 'discrete' else False
-        self.action_grad_max = action_grad_max
+        self.quantize_actions = True if action_type == 'continuous' else False
+        self.exploration_factor = exploration_factor
 
         # dim1 = variables
         # example [5, 3, 3]
-        self.action_space_min = action_space_min
-        self.action_space_max = action_space_max
-        self.num_of_actions = len(self.action_space_max)
-        self.action_space_min_array = np.array(self.action_space_min)
-        self.action_space_max_array = np.array(self.action_space_max)
+        if self.quantize_actions:
+            self.num_of_action_values = num_of_action_values
+            self.num_of_actions = len(self.num_of_action_values)
+            self.action_space_min = action_space_min
+            self.action_space_max = action_space_max
+            self.action_space_min_array = np.array(self.action_space_min)
+            self.action_space_max_array = np.array(self.action_space_max)
+        else:
+            self.num_of_action_values = num_of_action_values
+            self.num_of_actions = len(self.num_of_action_values)
 
         # dim1 = min/max of each variables
         # example [10,2,100]
@@ -74,22 +74,20 @@ class AgentTorchContinuous():
         self.build_value_network()
         self.build_policy_network()
 
-        self.memory = ExperienceMemory(self.memory_buffer_size, self.memory_buffer_filename, self.num_of_states, self.num_of_actions)
+        self.memory = ExperienceMemory(self.memory_buffer_size, self.memory_buffer_filename, self.num_of_states, 1)
 
         self.tensor_board_dir = Path.cwd() / 'runs' / name / str(time.time())
         self.tensor_board = SummaryWriter(self.tensor_board_dir, max_queue=10000, flush_secs=30)
-        hyper_params = {'agent_type': 'continuous',
-                        'unquantize_actions': self.unquantize_actions,
+        hyper_params = {'agent_type': 'discrete',
+                        'quantize_actions': self.quantize_actions,
                         'batch_size': self.batch_size,
                         'learn_iterations': self.learn_iterations,
                         'memory_buffer_size': self.memory_buffer_size,
                         'discount': self.discount,
                         'value_learn_rate': self.value_learn_rate,
                         'policy_learn_rate': self.policy_learn_rate,
-                        'value_copy_rate': self.value_copy_rate,
-                        'policy_copy_rate': self.policy_copy_rate,
                         'next_learn_factor': self.next_learn_factor,
-                        'action_grad_max': self.action_grad_max}
+                        'exploration_factor': self.exploration_factor}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
         self.learn_count = 1
@@ -100,23 +98,25 @@ class AgentTorchContinuous():
 
     # ------------------------- Externally Callable Functions -------------------------
 
-    def act(self, in_state, use_max_policy=False):
+    def act(self, in_state):
 
         state = np.array(in_state, ndmin=2)
         state = self.scale(state, self.state_space_min_array, self.state_space_max_array, -1, 1)
         state = torch.from_numpy(state).float().detach().to(self.device)
 
         self.policy.eval()
-        self.max_policy.eval()
 
         with torch.no_grad():
-            if use_max_policy:
-                action = self.max_policy(state)[0]
-            else:
-                action = self.policy(state)[0]
+            policy_logits = self.policy(state)[0]
 
-        out_action = action.cpu().numpy()
-        out_action = self.scale(out_action, -1, 1, self.action_space_min_array, self.action_space_max_array)
+            policy_probs_flat = torch.nn.functional.softmax(policy_logits * self.exploration_factor, dim=-1)
+            action_flat = torch.multinomial(policy_probs_flat, 1, replacement=True)
+
+        out_action = action_flat.cpu().numpy()
+        out_action = self.action_unflatten(out_action)
+
+        if self.quantize_actions:
+            out_action = unquantize(out_action, self.action_space_min_array, self.action_space_max_array, self.num_of_action_values)
 
         return out_action
 
@@ -144,7 +144,9 @@ class AgentTorchContinuous():
         state = self.scale(state, self.state_space_min_array, self.state_space_max_array, -1, 1)
 
         action = np.array(in_action, ndmin=1)
-        action = self.scale(action, self.action_space_min_array, self.action_space_max_array, -1, 1)
+        if self.quantize_actions:
+            action = quantize(action, self.action_space_min_array, self.action_space_max_array, self.num_of_action_values)
+        action = self.action_flatten(action)
         action = np.array(action, ndmin=2)
 
         reward = np.array(in_reward, ndmin=2)
@@ -173,29 +175,37 @@ class AgentTorchContinuous():
 
             # set the model to train mode
             self.value.train()
-            self.max_policy.train()
+            self.policy.train()
 
-            # forward pass
-            values = self.value(state, action)
-            max_policy_actions = self.max_policy(next_state)
-            values_next = self.target_value(next_state, max_policy_actions)
-            values_diff = values - values_next * self.discount * (1.0 - done)
+            # value forward pass
+            values = self.value(state)
+            values_sum = torch.gather(values, 1, action.long())
+            policy_logits = self.policy(next_state).detach()
+            policy_probs = torch.nn.functional.softmax(policy_logits, dim=1)
+            values_next = self.value(next_state)
+            values_next_sum = torch.sum(values_next * policy_probs, 1, keepdim=True)
+            values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
 
             # optimize value
-            values_next_hook = values_next.register_hook(lambda grad: grad * self.next_learn_factor)
+            values_next.register_hook(lambda grad: grad * self.next_learn_factor)
             self.value_optimizer.zero_grad()
             value_loss = self.value_criterion(values_diff, reward)
-            value_loss.backward(retain_graph=True)
+            value_loss.backward()
             self.value_optimizer.step()
-            values_next_hook.remove()
 
-            # optimize max policy
-            max_policy_actions_hook = max_policy_actions.register_hook(lambda grad: torch.clamp(grad, -self.action_grad_max, self.action_grad_max))
-            self.max_policy_optimizer.zero_grad()
-            policy_loss = self.max_policy_criterion(values_next)
+            # policy forward pass
+            policy_logits = self.policy(state)
+            policy_probs = torch.nn.functional.softmax(policy_logits, dim=1)
+            values = self.value(state).detach()
+            values_mean = values - torch.mean(values, dim=-1, keepdim=True)
+            values_norm = values_mean / torch.norm(values_mean, p=1, dim=-1, keepdim=True)
+            values_sum = torch.sum(values_norm * policy_probs, 1, keepdim=True)
+
+            # optimize policy
+            self.policy_optimizer.zero_grad()
+            policy_loss = self.policy_criterion(values_sum)
             policy_loss.backward()
-            self.max_policy_optimizer.step()
-            max_policy_actions_hook.remove()
+            self.policy_optimizer.step()
 
             # log results
             print('Batch: ' + str(batch_num)
@@ -207,15 +217,7 @@ class AgentTorchContinuous():
 
             self.learn_count += 1
 
-            # copy value
-            for target_param, param in zip(self.target_value.parameters(), self.value.parameters()):
-                target_param.data.copy_(self.value_copy_rate * param.data + (1.0 - self.value_copy_rate) * target_param.data)
-
-        # copy policy
-        for target_param, param in zip(self.policy.parameters(), self.max_policy.parameters()):
-            target_param.data.copy_(self.policy_copy_rate * param.data + (1.0 - self.policy_copy_rate) * target_param.data)
-
-        pass
+    pass
 
     def save(self):
 
@@ -233,35 +235,24 @@ class AgentTorchContinuous():
 
         class Net(torch.nn.Module):
 
-            def __init__(self, num_of_states, num_of_actions):
+            def __init__(self, num_of_states, num_of_action_values):
                 super(Net, self).__init__()
-                self.fc1 = torch.nn.Linear(num_of_states + num_of_actions, 256)
+                self.num_of_action_values = num_of_action_values
+                self.fc1 = torch.nn.Linear(num_of_states, 256)
                 self.fc2 = torch.nn.Linear(256, 128)
                 self.fc3 = torch.nn.Linear(128, 64)
                 self.fc4 = torch.nn.Linear(64, 32)
-                self.fc5 = torch.nn.Linear(32, 1)
+                self.fc5 = torch.nn.Linear(32, np.prod(self.num_of_action_values))
 
-            def forward(self, state_input, action_input):
-                x = torch.cat((state_input, action_input), 1)
-                x = torch.nn.functional.relu(self.fc1(x))
+            def forward(self, state_input):
+                x = torch.nn.functional.relu(self.fc1(state_input))
                 x = torch.nn.functional.relu(self.fc2(x))
                 x = torch.nn.functional.relu(self.fc3(x))
                 x = torch.nn.functional.relu(self.fc4(x))
                 x = self.fc5(x)
                 return x
 
-        self.target_value = Net(self.num_of_states, self.num_of_actions).to(self.device)
-
-        if self.target_value_filename.is_file():
-            # Load value network
-            print('Loading target value network from file ' + str(self.target_value_filename))
-            self.target_value.load_state_dict(torch.load(self.target_value_filename))
-
-        else:
-            # Build value network
-            print('No target value network loaded from file')
-
-        self.value = Net(self.num_of_states, self.num_of_actions).to(self.device)
+        self.value = Net(self.num_of_states, self.num_of_action_values).to(self.device)
 
         if self.value_filename.is_file():
             # Load value network
@@ -283,13 +274,14 @@ class AgentTorchContinuous():
 
         class Net(torch.nn.Module):
 
-            def __init__(self, num_of_states, num_of_actions):
+            def __init__(self, num_of_states, num_of_action_values):
                 super(Net, self).__init__()
+                self.num_of_action_values = num_of_action_values
                 self.fc1 = torch.nn.Linear(num_of_states, 256)
                 self.fc2 = torch.nn.Linear(256, 128)
                 self.fc3 = torch.nn.Linear(128, 64)
                 self.fc4 = torch.nn.Linear(64, 32)
-                self.fc5 = torch.nn.Linear(32, num_of_actions)
+                self.fc5 = torch.nn.Linear(32, np.prod(self.num_of_action_values))
 
             def forward(self, state_input):
                 x = torch.nn.functional.relu(self.fc1(state_input))
@@ -299,23 +291,12 @@ class AgentTorchContinuous():
                 x = self.fc5(x)
                 return x
 
-        self.policy = Net(self.num_of_states, self.num_of_actions).to(self.device)
+        self.policy = Net(self.num_of_states, self.num_of_action_values).to(self.device)
 
         if self.policy_filename.is_file():
             # Load value network
-            print('Loading policy network from file ' + str(self.policy_filename))
+            print('Loading max policy network from file ' + str(self.policy_filename))
             self.policy.load_state_dict(torch.load(self.policy_filename))
-
-        else:
-            # Build value network
-            print('No policy network loaded from file')
-
-        self.max_policy = Net(self.num_of_states, self.num_of_actions).to(self.device)
-
-        if self.max_policy_filename.is_file():
-            # Load value network
-            print('Loading max policy network from file ' + str(self.max_policy_filename))
-            self.max_policy.load_state_dict(torch.load(self.max_policy_filename))
 
         else:
             # Build value network
@@ -325,17 +306,16 @@ class AgentTorchContinuous():
             loss = -torch.mean(output)
             return loss
 
-        self.max_policy_criterion = maximize_loss
-        self.max_policy_optimizer = torch.optim.Adam(self.max_policy.parameters(), lr=self.policy_learn_rate)
+        self.policy_criterion = maximize_loss
+        self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.policy_learn_rate)
 
         pass
 
     def save_networks(self):
 
         torch.save(self.value.state_dict(), self.value_filename)
-        torch.save(self.target_value.state_dict(), self.target_value_filename)
         torch.save(self.policy.state_dict(), self.policy_filename)
-        torch.save(self.max_policy.state_dict(), self.max_policy_filename)
+        torch.save(self.policy.state_dict(), self.policy_filename)
 
         pass
 
@@ -348,3 +328,21 @@ class AgentTorchContinuous():
         output = input_scaled * (output_max - output_min) + output_min
 
         return output
+
+    def action_flatten(self, in_action):
+        num_flat_actions = np.prod(self.num_of_action_values)
+        flat_action_array = np.arange(num_flat_actions)
+        action_array = np.reshape(flat_action_array, self.num_of_action_values)
+        a = action_array
+        for n in in_action:
+            a = a[n]
+        out_action = np.array(a)
+        return out_action
+
+    def action_unflatten(self, in_action):
+        num_flat_actions = np.prod(self.num_of_action_values)
+        flat_action_array = np.arange(num_flat_actions)
+        action_array = np.reshape(flat_action_array, self.num_of_action_values)
+        out_action = np.where(action_array == in_action)
+        out_action = np.array([n[0] for n in out_action])
+        return out_action
