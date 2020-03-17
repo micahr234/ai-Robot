@@ -1,4 +1,4 @@
-# ai->Robot
+# ai-Robot
 
 Installation instructions for Windows:
 
