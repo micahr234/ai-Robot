@@ -145,6 +145,7 @@ class AgentDiscrete():
 
         action = np.array(in_action, ndmin=1)
         if self.quantize_actions:
+            action = np.clip(action, self.action_space_min_array, self.action_space_max_array)
             action = quantize(action, self.action_space_min_array, self.action_space_max_array, self.num_of_action_values)
         action = self.action_flatten(action)
         action = np.array(action, ndmin=2)
@@ -163,7 +164,7 @@ class AgentDiscrete():
 
     def learn(self):
 
-        if len(self.memory) < self.memory_buffer_size:
+        if len(self.memory) < self.batch_size:
             print('Agent waiting for more samples to learn from')
             return
         else:

@@ -161,7 +161,7 @@ class AgentContinuous():
 
     def learn(self):
 
-        if len(self.memory) < self.memory_buffer_size:
+        if len(self.memory) < self.batch_size:
             print('Agent waiting for more samples to learn from')
             return
         else:

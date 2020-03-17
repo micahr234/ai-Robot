@@ -1,9 +1,10 @@
+import gym
 import numpy as np
 import time
 import cProfile
 
 # Define run
-def Run(env, agent, max_timestep, learn_interval, save_interval, render=True, delay=0.0, profile=False):
+def Run(env, agent, max_timestep, learn_interval, save_interval, render=True, delay=0.0, profile=False, enable_eposide_timestep=True, noise_power=0):
 
     episode_timestep = 1
     done = True
@@ -20,15 +21,17 @@ def Run(env, agent, max_timestep, learn_interval, save_interval, render=True, de
             episode_timestep = 1
             episode_cumulative_reward = 0
             next_observation_partial = env.reset()
-            next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
+            next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if enable_eposide_timestep else next_observation_partial
+
             if render: env.render()
             if render: time.sleep(delay)
 
         observation = next_observation
 
         action = agent.act(observation)
-        next_observation_partial, reward, done, info = env.step(action)
-        next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
+        corrupted_action = action + noise_power * np.random.randn(*action.shape)
+        next_observation_partial, reward, done, info = env.step(corrupted_action)
+        next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if enable_eposide_timestep else next_observation_partial
         agent.record(observation, action, reward, next_observation, done)
 
         episode_cumulative_reward += reward
