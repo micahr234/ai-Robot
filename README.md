@@ -6,7 +6,7 @@ Installation instructions for Windows:
 
 2. Install pytorch
 
-      	pip install torch===1.4.0 torchvision===0.5.0 -f https://download.pytorch.org/whl/torch_stable.html
+       pip install torch===1.4.0 torchvision===0.5.0 -f https://download.pytorch.org/whl/torch_stable.html
     
 3. Install gym
 
@@ -16,8 +16,8 @@ Installation instructions for Windows:
 
 5. Install PyBullet
 
-      	pip install pybullet
+       pip install pybullet
         
 6. Install Tensorboard
 
-      	pip install tensorboard
+       pip install tensorboard
