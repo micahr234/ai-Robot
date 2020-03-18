@@ -12,7 +12,13 @@ Installation instructions for Windows:
 
        pip install gym
       
-4. Install Microsoft Visual C++ 14.0 (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+4. Install Microsoft Visual C++ 14.0
+
+Goto the URL below and look for the built tool installer. Install C++ built tools.
+https://visualstudio.microsoft.com/downloads/
+
+Download and install the C++ redistributable
+https://aka.ms/vs/16/release/vc_redist.x64.exe
 
 5. Install PyBullet
 
