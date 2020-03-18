@@ -6,20 +6,21 @@ from agentDiscrete import *
 from run import *
 
 #Params
-name = "HopperDiscrete-40"
+name = "HopperDiscrete-55"
 action_type = 'continuous'
 
 max_timestep = 10000000
 learn_interval = 2000
 batch_size = 500
-learn_iterations = int(100000/batch_size)
+learn_iterations = int(10000/batch_size) #int(100000/batch_size)
 memory_buffer_size = 10000000
 discount = 0.999
 value_learn_rate = 0.001
 policy_learn_rate = 0.0001
 next_learn_factor = 0.8
 save_interval = 50000
-exploration_factor = 0.9
+exploration_period = 10000
+exploration_factor = lambda t: abs((t-1-exploration_period/2) % exploration_period - exploration_period/2)
 noise_power = 0.0
 
 num_of_action_values = [9, 9, 9] # For continuous environments
@@ -33,7 +34,7 @@ reward_space_max = [1]
 render = False
 delay = 0.0
 debug = False
-profile = True
+profile = False
 
 # Run simulation
 env = gym.make('HopperBulletEnv-v0', render=render)
