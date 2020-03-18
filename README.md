@@ -7,13 +7,17 @@ Installation instructions for Windows:
 2. Install pytorch
 
       	pip install torch===1.4.0 torchvision===0.5.0 -f https://download.pytorch.org/whl/torch_stable.html
-      
-3. Install Microsoft Visual C++ 14.0 (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+    
+3. Install gym
 
-4. Install PyBullet
+            pip install gym
+      
+4. Install Microsoft Visual C++ 14.0 (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+
+5. Install PyBullet
 
       	pip install pybullet
         
-5. Install Tensorboard
+6. Install Tensorboard
 
       	pip install tensorboard
