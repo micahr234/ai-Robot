@@ -77,7 +77,7 @@ class AgentDiscrete():
         self.memory = ExperienceMemory(self.memory_buffer_size, self.memory_buffer_filename, self.num_of_states, 1)
 
         self.tensor_board_dir = Path.cwd() / 'runs' / name / str(time.time())
-        self.tensor_board = SummaryWriter(self.tensor_board_dir, max_queue=10000, flush_secs=30)
+        self.tensor_board = SummaryWriter(self.tensor_board_dir, max_queue=10000, flush_secs=120)
         hyper_params = {'agent_type': 'discrete',
                         'quantize_actions': self.quantize_actions,
                         'batch_size': self.batch_size,
@@ -169,6 +169,9 @@ class AgentDiscrete():
             return
         else:
             print('Agent ' + str(self.name) + ' learning fom ' + str(len(self.memory)) + ' samples')
+            
+        value_loss_results = []
+        policy_loss_results = []
 
         for batch_num in range(1, self.learn_iterations + 1):
 
@@ -209,14 +212,20 @@ class AgentDiscrete():
             self.policy_optimizer.step()
 
             # log results
-            print('Batch: ' + str(batch_num)
-                  + ' \t\tvalue loss:' + str(value_loss.item())
-                  + ' \t\tpolicy loss:' + str(policy_loss.item()))
-
+            value_loss_results.append(value_loss.item())
+            policy_loss_results.append(policy_loss.item())
+            
             self.tensor_board.add_scalar('Loss/value', value_loss.item(), self.learn_count)
             self.tensor_board.add_scalar('Loss/policy', policy_loss.item(), self.learn_count)
 
             self.learn_count += 1
+
+        # print summary
+        print('Batches: ' + str(self.learn_iterations)
+              + ' \t\tValue loss mean:' + str(np.mean(value_loss_results))
+              + ' \t\tValue loss std:' + str(np.std(value_loss_results))
+              + ' \t\tPolicy loss mean:' + str(np.mean(policy_loss_results))
+              + ' \t\tPolicy loss std:' + str(np.std(policy_loss_results)))
 
     pass
 

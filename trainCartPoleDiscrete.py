@@ -34,6 +34,7 @@ reward_space_max = [1]
 render = False
 delay = 0.0
 debug = False
+profile = True
 
 # Run simulation
 discrete_actions = True if action_type == 'discrete' else False
@@ -44,4 +45,4 @@ agent = AgentDiscrete(name, action_type, num_of_action_values, action_space_min,
                       discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, next_learn_factor=next_learn_factor,
                       debug=debug)
 
-Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=debug, enable_eposide_timestep=False, noise_power=noise_power)
+Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=profile, enable_eposide_timestep=False, noise_power=noise_power)
