@@ -10,7 +10,7 @@ Installation instructions for Windows:
     
 3. Install gym
 
-           pip install gym
+       pip install gym
       
 4. Install Microsoft Visual C++ 14.0 (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 
