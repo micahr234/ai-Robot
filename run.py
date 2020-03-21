@@ -2,6 +2,7 @@ import gym
 import numpy as np
 import time
 import cProfile
+import os
 
 # Define run
 def Run(env, agent, max_timestep, learn_interval, save_interval, render=True, delay=0.0, profile=False, enable_eposide_timestep=True, noise_power=0):
@@ -51,3 +52,4 @@ def Run(env, agent, max_timestep, learn_interval, save_interval, render=True, de
     if profile:
         pr.disable()
         pr.dump_stats('profile.dat')
+        os.system("snakeviz profile.dat")

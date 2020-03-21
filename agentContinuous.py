@@ -92,8 +92,9 @@ class AgentContinuous():
                         'action_grad_max': self.action_grad_max}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
-        self.learn_count = 1
+        self.batch_count = 1
         self.record_count = 1
+        self.action_count = 1
         self.cumulative_reward = 0
 
         pass
@@ -118,6 +119,8 @@ class AgentContinuous():
         out_action = action.cpu().numpy()
         out_action = self.scale(out_action, -1, 1, self.action_space_min_array, self.action_space_max_array)
 
+        self.action_count += 1
+
         return out_action
 
     def record(self, in_state, in_action, in_reward, in_next_state, in_done):
@@ -125,19 +128,17 @@ class AgentContinuous():
         # Log experience
         if self.debug:
             for n in range(self.num_of_states):
-                self.tensor_board.add_scalar('Experience/state' + str(n), in_state[n], self.record_count)
-                self.tensor_board.add_scalar('Experience/next_state' + str(n), in_next_state[n], self.record_count)
+                self.tensor_board.add_scalar('Record/state' + str(n), in_state[n], self.record_count)
+                self.tensor_board.add_scalar('Record/next_state' + str(n), in_next_state[n], self.record_count)
             for n in range(self.num_of_actions):
-                self.tensor_board.add_scalar('Experience/action' + str(n), in_action[n], self.record_count)
-            self.tensor_board.add_scalar('Experience/reward', in_reward, self.record_count)
-            self.tensor_board.add_scalar('Experience/in_done', in_done, self.record_count)
+                self.tensor_board.add_scalar('Record/action' + str(n), in_action[n], self.record_count)
+            self.tensor_board.add_scalar('Record/reward', in_reward, self.record_count)
+            self.tensor_board.add_scalar('Record/in_done', in_done, self.record_count)
 
         self.cumulative_reward += in_reward
         if in_done:
-            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
+            self.tensor_board.add_scalar('Record/cumulative_reward', self.cumulative_reward, self.record_count)
             self.cumulative_reward = 0
-
-        self.record_count += 1
 
         # Save memory
         state = np.array(in_state, ndmin=2)
@@ -156,6 +157,8 @@ class AgentContinuous():
         done = np.array(in_done, ndmin=2)
 
         self.memory.add(state, action, reward, next_state, done)
+
+        self.record_count += 1
 
         pass
 
@@ -208,10 +211,10 @@ class AgentContinuous():
             value_loss_results.append(value_loss.item())
             policy_loss_results.append(policy_loss.item())
 
-            self.tensor_board.add_scalar('Loss/value', value_loss.item(), self.learn_count)
-            self.tensor_board.add_scalar('Loss/policy', policy_loss.item(), self.learn_count)
+            self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
 
-            self.learn_count += 1
+            self.batch_count += 1
 
         # copy policy
         for target_param, param in zip(self.policy.parameters(), self.max_policy.parameters()):

@@ -13,7 +13,7 @@ class AgentDiscrete():
     # ------------------------- Initialization -------------------------
 
     def __init__(self, name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
-                 batch_size=1000, learn_iterations=10, memory_buffer_size=100000, exploration_factor=1.0,
+                 batch_size=1000, learn_iterations=10, memory_buffer_size=100000, value_weight_factor=1.0,
                  discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, next_learn_factor=0.0,
                  debug=False):
 
@@ -38,7 +38,7 @@ class AgentDiscrete():
         self.batch_size = batch_size
         self.next_learn_factor = next_learn_factor
         self.quantize_actions = True if action_type == 'continuous' else False
-        self.exploration_factor = exploration_factor
+        self.value_weight_factor = value_weight_factor
 
         # dim1 = variables
         # example [5, 3, 3]
@@ -87,11 +87,12 @@ class AgentDiscrete():
                         'value_learn_rate': self.value_learn_rate,
                         'policy_learn_rate': self.policy_learn_rate,
                         'next_learn_factor': self.next_learn_factor,
-                        'exploration_factor': self.exploration_factor}
+                        'value_weight_factor': self.value_weight_factor}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
-        self.learn_count = 1
+        self.batch_count = 1
         self.record_count = 1
+        self.action_count = 1
         self.cumulative_reward = 0
 
         pass
@@ -109,7 +110,7 @@ class AgentDiscrete():
         with torch.no_grad():
             policy_logits = self.policy(state)[0]
 
-            policy_probs_flat = torch.nn.functional.softmax(policy_logits * self.exploration_factor, dim=-1)
+            policy_probs_flat = torch.nn.functional.softmax(policy_logits, dim=-1)
             action_flat = torch.multinomial(policy_probs_flat, 1, replacement=True)
 
         out_action = action_flat.cpu().numpy()
@@ -118,6 +119,8 @@ class AgentDiscrete():
         if self.quantize_actions:
             out_action = unquantize(out_action, self.action_space_min_array, self.action_space_max_array, self.num_of_action_values)
 
+        self.action_count += 1
+
         return out_action
 
     def record(self, in_state, in_action, in_reward, in_next_state, in_done):
@@ -125,19 +128,17 @@ class AgentDiscrete():
         # Log experience
         if self.debug:
             for n in range(self.num_of_states):
-                self.tensor_board.add_scalar('Experience/state' + str(n), in_state[n], self.record_count)
-                self.tensor_board.add_scalar('Experience/next_state' + str(n), in_next_state[n], self.record_count)
+                self.tensor_board.add_scalar('Record/state' + str(n), in_state[n], self.record_count)
+                self.tensor_board.add_scalar('Record/next_state' + str(n), in_next_state[n], self.record_count)
             for n in range(self.num_of_actions):
-                self.tensor_board.add_scalar('Experience/action' + str(n), in_action[n], self.record_count)
-            self.tensor_board.add_scalar('Experience/reward', in_reward, self.record_count)
-            self.tensor_board.add_scalar('Experience/in_done', in_done, self.record_count)
+                self.tensor_board.add_scalar('Record/action' + str(n), in_action[n], self.record_count)
+            self.tensor_board.add_scalar('Record/reward', in_reward, self.record_count)
+            self.tensor_board.add_scalar('Record/in_done', in_done, self.record_count)
 
         self.cumulative_reward += in_reward
         if in_done:
-            self.tensor_board.add_scalar('Experience/cumulative_reward', self.cumulative_reward, self.record_count)
+            self.tensor_board.add_scalar('Record/cumulative_reward', self.cumulative_reward, self.record_count)
             self.cumulative_reward = 0
-
-        self.record_count += 1
 
         # Save memory
         state = np.array(in_state, ndmin=2)
@@ -159,6 +160,8 @@ class AgentDiscrete():
         done = np.array(in_done, ndmin=2)
 
         self.memory.add(state, action, reward, next_state, done)
+
+        self.record_count += 1
 
         pass
 
@@ -199,15 +202,16 @@ class AgentDiscrete():
 
             # policy forward pass
             policy_logits = self.policy(state)
-            policy_probs = torch.nn.functional.softmax(policy_logits, dim=1)
+            policy_probs_log = torch.nn.functional.log_softmax(policy_logits, dim=-1)
             values = self.value(state).detach()
             values_mean = values - torch.mean(values, dim=-1, keepdim=True)
             values_norm = values_mean / torch.norm(values_mean, p=1, dim=-1, keepdim=True)
-            values_sum = torch.sum(values_norm * policy_probs, 1, keepdim=True)
+            value_probs = torch.nn.functional.softmax(values_norm * self.value_weight_factor, dim=-1)
+            policy_cross_entropy = -torch.sum(value_probs * policy_probs_log, 1, keepdim=True)# / float(np.log(self.num_of_action_values))
 
             # optimize policy
             self.policy_optimizer.zero_grad()
-            policy_loss = self.policy_criterion(values_sum)
+            policy_loss = self.policy_criterion(policy_cross_entropy)
             policy_loss.backward()
             self.policy_optimizer.step()
 
@@ -215,10 +219,10 @@ class AgentDiscrete():
             value_loss_results.append(value_loss.item())
             policy_loss_results.append(policy_loss.item())
             
-            self.tensor_board.add_scalar('Loss/value', value_loss.item(), self.learn_count)
-            self.tensor_board.add_scalar('Loss/policy', policy_loss.item(), self.learn_count)
+            self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
 
-            self.learn_count += 1
+            self.batch_count += 1
 
         # print summary
         print('Batches: ' + str(self.learn_iterations)
@@ -312,11 +316,11 @@ class AgentDiscrete():
             # Build value network
             print('No max policy network loaded from file')
 
-        def maximize_loss(output):
-            loss = -torch.mean(output)
+        def minimize_loss(output):
+            loss = torch.mean(output)
             return loss
 
-        self.policy_criterion = maximize_loss
+        self.policy_criterion = minimize_loss
         self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.policy_learn_rate)
 
         pass
