@@ -13,7 +13,7 @@ class AgentDiscrete():
     # ------------------------- Initialization -------------------------
 
     def __init__(self, name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
-                 batch_size=1000, learn_iterations=10, memory_buffer_size=100000, value_weight_factor=1.0,
+                 batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
                  discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, next_learn_factor=0.0,
                  debug=False):
 
@@ -38,7 +38,6 @@ class AgentDiscrete():
         self.batch_size = batch_size
         self.next_learn_factor = next_learn_factor
         self.quantize_actions = True if action_type == 'continuous' else False
-        self.value_weight_factor = value_weight_factor
 
         # dim1 = variables
         # example [5, 3, 3]
@@ -86,8 +85,7 @@ class AgentDiscrete():
                         'discount': self.discount,
                         'value_learn_rate': self.value_learn_rate,
                         'policy_learn_rate': self.policy_learn_rate,
-                        'next_learn_factor': self.next_learn_factor,
-                        'value_weight_factor': self.value_weight_factor}
+                        'next_learn_factor': self.next_learn_factor}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
         self.batch_count = 1
@@ -186,11 +184,11 @@ class AgentDiscrete():
 
             # value forward pass
             values = self.value(state)
-            values_sum = torch.gather(values, 1, action.long())
+            values_sum = torch.gather(values, -1, action.long())
             policy_logits = self.policy(next_state).detach()
-            policy_probs = torch.nn.functional.softmax(policy_logits, dim=1)
+            policy_probs = torch.nn.functional.softmax(policy_logits, dim=-1)
             values_next = self.value(next_state)
-            values_next_sum = torch.sum(values_next * policy_probs, 1, keepdim=True)
+            values_next_sum = torch.sum(values_next * policy_probs, -1, keepdim=True)
             values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
 
             # optimize value
@@ -200,26 +198,24 @@ class AgentDiscrete():
             value_loss.backward()
             self.value_optimizer.step()
 
+            # log value results
+            value_loss_results.append(value_loss.item())
+            self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
+
             # policy forward pass
             policy_logits = self.policy(state)
-            policy_probs_log = torch.nn.functional.log_softmax(policy_logits, dim=-1)
+            policy_probs = torch.nn.functional.softmax(policy_logits, dim=-1)
             values = self.value(state).detach()
-            values_mean = values - torch.mean(values, dim=-1, keepdim=True)
-            values_norm = values_mean / torch.norm(values_mean, p=1, dim=-1, keepdim=True)
-            value_probs = torch.nn.functional.softmax(values_norm * self.value_weight_factor, dim=-1)
-            policy_cross_entropy = -torch.sum(value_probs * policy_probs_log, 1, keepdim=True)# / float(np.log(self.num_of_action_values))
+            values_sum = torch.sum(values * policy_probs, -1, keepdim=True)
 
             # optimize policy
             self.policy_optimizer.zero_grad()
-            policy_loss = self.policy_criterion(policy_cross_entropy)
+            policy_loss = self.policy_criterion(values_sum)
             policy_loss.backward()
             self.policy_optimizer.step()
 
-            # log results
-            value_loss_results.append(value_loss.item())
+            # log policy results
             policy_loss_results.append(policy_loss.item())
-            
-            self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
             self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
 
             self.batch_count += 1
@@ -316,11 +312,11 @@ class AgentDiscrete():
             # Build value network
             print('No max policy network loaded from file')
 
-        def minimize_loss(output):
-            loss = torch.mean(output)
+        def maxminimize_loss(output):
+            loss = -torch.mean(output)
             return loss
 
-        self.policy_criterion = minimize_loss
+        self.policy_criterion = maxminimize_loss
         self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.policy_learn_rate)
 
         pass
