@@ -6,18 +6,18 @@ from agentContinuous import *
 from run import *
 
 #Params
-name = "CartPoleContinuous-11"
+name = "CartPoleContinuous-125"
 action_type = 'continuous'
 
-max_timestep = 50000
+max_timestep = 100000
 learn_interval = 2000
-batch_size = 1000 # increasing batch size give more exploration
-learn_iterations = int(100000/batch_size)
-memory_buffer_size = 50000
+batch_size = 500
+learn_iterations = int(learn_interval*50/batch_size)
+memory_buffer_size = max_timestep
 discount = 1.0
 value_learn_rate = 0.001
-policy_learn_rate = 0.00005
-next_learn_factor = 0.3
+policy_learn_rate = 0.0001
+next_learn_factor = 0.5
 save_interval = max_timestep+1
 noise_power = 0.0
 

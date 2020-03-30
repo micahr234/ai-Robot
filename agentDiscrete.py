@@ -170,17 +170,14 @@ class AgentDiscrete():
             return
         else:
             print('Agent ' + str(self.name) + ' learning fom ' + str(len(self.memory)) + ' samples')
-            
-        value_loss_results = []
-        policy_loss_results = []
+
+        # set the model to train mode
+        self.value.train()
+        self.policy.train()
 
         for batch_num in range(1, self.learn_iterations + 1):
 
             state, action, reward, next_state, done = self.memory.sample(self.batch_size)
-
-            # set the model to train mode
-            self.value.train()
-            self.policy.train()
 
             # value forward pass
             values = self.value(state)
@@ -190,6 +187,7 @@ class AgentDiscrete():
             values_next = self.value(next_state)
             values_next_sum = torch.sum(values_next * policy_probs, -1, keepdim=True)
             values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
+            value_avg = torch.mean(values_sum).detach()
 
             # optimize value
             values_next.register_hook(lambda grad: grad * self.next_learn_factor)
@@ -199,33 +197,29 @@ class AgentDiscrete():
             self.value_optimizer.step()
 
             # log value results
-            value_loss_results.append(value_loss.item())
+            self.tensor_board.add_scalar('Learn/value_avg', value_avg, self.batch_count)
             self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
 
             # policy forward pass
             policy_logits = self.policy(state)
             policy_probs = torch.nn.functional.softmax(policy_logits, dim=-1)
             values = self.value(state).detach()
-            values_sum = torch.sum(values * policy_probs, -1, keepdim=True)
+            values_mean = values - torch.mean(values, -1, keepdim=True).detach()
+            values_sum = torch.sum(values_mean * policy_probs, -1, keepdim=True)
 
             # optimize policy
             self.policy_optimizer.zero_grad()
-            policy_loss = self.policy_criterion(values_sum)
+            policy_loss = self.policy_criterion(values_sum) / value_loss.item()
             policy_loss.backward()
             self.policy_optimizer.step()
 
             # log policy results
-            policy_loss_results.append(policy_loss.item())
             self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
 
             self.batch_count += 1
 
         # print summary
-        print('Batches: ' + str(self.learn_iterations)
-              + ' \t\tValue loss mean:' + str(np.mean(value_loss_results))
-              + ' \t\tValue loss std:' + str(np.std(value_loss_results))
-              + ' \t\tPolicy loss mean:' + str(np.mean(policy_loss_results))
-              + ' \t\tPolicy loss std:' + str(np.std(policy_loss_results)))
+        print('Agent finished learning')
 
     pass
 
@@ -255,10 +249,10 @@ class AgentDiscrete():
                 self.fc5 = torch.nn.Linear(32, np.prod(self.num_of_action_values))
 
             def forward(self, state_input):
-                x = torch.nn.functional.relu(self.fc1(state_input))
-                x = torch.nn.functional.relu(self.fc2(x))
-                x = torch.nn.functional.relu(self.fc3(x))
-                x = torch.nn.functional.relu(self.fc4(x))
+                x = torch.relu(self.fc1(state_input))
+                x = torch.relu(self.fc2(x))
+                x = torch.relu(self.fc3(x))
+                x = torch.relu(self.fc4(x))
                 x = self.fc5(x)
                 return x
 
@@ -294,10 +288,10 @@ class AgentDiscrete():
                 self.fc5 = torch.nn.Linear(32, np.prod(self.num_of_action_values))
 
             def forward(self, state_input):
-                x = torch.nn.functional.relu(self.fc1(state_input))
-                x = torch.nn.functional.relu(self.fc2(x))
-                x = torch.nn.functional.relu(self.fc3(x))
-                x = torch.nn.functional.relu(self.fc4(x))
+                x = torch.relu(self.fc1(state_input))
+                x = torch.relu(self.fc2(x))
+                x = torch.relu(self.fc3(x))
+                x = torch.relu(self.fc4(x))
                 x = self.fc5(x)
                 return x
 

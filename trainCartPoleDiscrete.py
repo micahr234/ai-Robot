@@ -7,23 +7,23 @@ from run import *
 from utils import *
 
 #Params
-name = "CartPoleDiscrete-53"
+name = "CartPoleDiscrete-25"
 action_type = 'continuous'
 
-max_timestep = 30000
+max_timestep = 100000
 learn_interval = 2000
 batch_size = 500
-learn_iterations = int(100000/batch_size)
-memory_buffer_size = 50000
+learn_iterations = int(learn_interval*50/batch_size)
+memory_buffer_size = max_timestep
 discount = 1.0
 value_learn_rate = 0.001
 policy_learn_rate = 0.0001
-next_learn_factor = 0.1
+next_learn_factor = 0.6
 save_interval = max_timestep+1
 noise_power = 0.0
 
 #num_of_action_values = [2] # For discrete environments
-num_of_action_values = [3] # For continuous environments
+num_of_action_values = [100] # For continuous environments
 action_space_min = [-10]
 action_space_max = [10]
 state_space_min = [-1, -1, -1, -1] #+ [1]

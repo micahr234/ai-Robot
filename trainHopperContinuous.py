@@ -6,18 +6,18 @@ from agentContinuous import *
 from run import *
 
 #Params
-name = "HopperContinuous-3"
+name = "HopperContinuous-1"
 action_type = 'continuous'
 
 max_timestep = 1000000
 learn_interval = 2000
 batch_size = 1000 # increasing batch size give more exploration
-learn_iterations = int(100000/batch_size)
-memory_buffer_size = 1000000
+learn_iterations = int(learn_interval*50/batch_size)
+memory_buffer_size = 100000
 discount = 1.0
 value_learn_rate = 0.001
-policy_learn_rate = 0.00001
-next_learn_factor = 0.9
+policy_learn_rate = 0.0001
+next_learn_factor = 0.8
 save_interval = max_timestep+1
 noise_power = 0.0
 

@@ -157,22 +157,20 @@ class AgentContinuous():
         else:
             print('Agent ' + str(self.name) + ' learning fom ' + str(len(self.memory)) + ' samples')
 
-        value_loss_results = []
-        policy_loss_results = []
+        # set the model to train mode
+        self.value.train()
+        self.policy.train()
 
         for batch_num in range(1, self.learn_iterations + 1):
 
             state, action, reward, next_state, done = self.memory.sample(self.batch_size)
 
-            # set the model to train mode
-            self.value.train()
-            self.policy.train()
-
             # value forward pass
             values = self.value(state, action)
-            next_actions = self.policy(next_state)
-            values_next = self.value(next_state, next_actions)
+            actions_next = self.policy(next_state)
+            values_next = self.value(next_state, actions_next)
             values_diff = values - values_next * self.discount * (1.0 - done)
+            value_avg = torch.mean(values).detach()
 
             # optimize value
             values_next.register_hook(lambda grad: grad * self.next_learn_factor)
@@ -182,31 +180,26 @@ class AgentContinuous():
             self.value_optimizer.step()
 
             # log value results
-            value_loss_results.append(value_loss.item())
+            self.tensor_board.add_scalar('Learn/value_avg', value_avg, self.batch_count)
             self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
 
             # policy forward pass
-            current_actions = self.policy(state)
-            values = self.value(state, current_actions)
+            actions_current = self.policy(state)
+            values = self.value(state, actions_current)
 
             # optimize policy
-            self.max_policy_optimizer.zero_grad()
-            policy_loss = self.max_policy_criterion(values)
+            self.policy_optimizer.zero_grad()
+            policy_loss = self.max_policy_criterion(values) / value_loss.item()
             policy_loss.backward()
-            self.max_policy_optimizer.step()
+            self.policy_optimizer.step()
 
             # log policy results
-            policy_loss_results.append(policy_loss.item())
             self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
 
             self.batch_count += 1
 
         # print summary
-        print('Batches: ' + str(self.learn_iterations)
-              + ' \t\tValue loss mean:' + str(np.mean(value_loss_results))
-              + ' \t\tValue loss std:' + str(np.std(value_loss_results))
-              + ' \t\tPolicy loss mean:' + str(np.mean(policy_loss_results))
-              + ' \t\tPolicy loss std:' + str(np.std(policy_loss_results)))
+        print('Agent finished learning')
 
         pass
 
@@ -236,10 +229,10 @@ class AgentContinuous():
 
             def forward(self, state_input, action_input):
                 x = torch.cat((state_input, action_input), 1)
-                x = torch.nn.functional.relu(self.fc1(x))
-                x = torch.nn.functional.relu(self.fc2(x))
-                x = torch.nn.functional.relu(self.fc3(x))
-                x = torch.nn.functional.relu(self.fc4(x))
+                x = torch.relu(self.fc1(x))
+                x = torch.relu(self.fc2(x))
+                x = torch.relu(self.fc3(x))
+                x = torch.relu(self.fc4(x))
                 x = self.fc5(x)
                 return x
 
@@ -274,11 +267,11 @@ class AgentContinuous():
                 self.fc5 = torch.nn.Linear(32, num_of_actions)
 
             def forward(self, state_input):
-                x = torch.nn.functional.relu(self.fc1(state_input))
-                x = torch.nn.functional.relu(self.fc2(x))
-                x = torch.nn.functional.relu(self.fc3(x))
-                x = torch.nn.functional.relu(self.fc4(x))
-                x = self.fc5(x)
+                x = torch.relu(self.fc1(state_input))
+                x = torch.relu(self.fc2(x))
+                x = torch.relu(self.fc3(x))
+                x = torch.relu(self.fc4(x))
+                x = torch.tanh(self.fc5(x))
                 return x
 
         self.policy = Net(self.num_of_states, self.num_of_actions).to(self.device)
@@ -297,7 +290,7 @@ class AgentContinuous():
             return loss
 
         self.max_policy_criterion = maximize_loss
-        self.max_policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.policy_learn_rate)
+        self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.policy_learn_rate)
 
         pass
 
