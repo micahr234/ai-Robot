@@ -7,18 +7,18 @@ from run import *
 from utils import *
 
 #Params
-name = "CartPoleDiscrete-25"
+name = "CartPoleDiscrete-43"
 action_type = 'continuous'
 
 max_timestep = 100000
 learn_interval = 2000
 batch_size = 500
 learn_iterations = int(learn_interval*50/batch_size)
-memory_buffer_size = max_timestep
+memory_buffer_size = max_timestep*10
 discount = 1.0
-value_learn_rate = 0.001
+value_learn_rate = 0.0003
 policy_learn_rate = 0.0001
-next_learn_factor = 0.6
+next_learn_factor = 0.8
 save_interval = max_timestep+1
 noise_power = 0.0
 
@@ -26,8 +26,8 @@ noise_power = 0.0
 num_of_action_values = [100] # For continuous environments
 action_space_min = [-10]
 action_space_max = [10]
-state_space_min = [-1, -1, -1, -1] #+ [1]
-state_space_max = [1, 1, 1, 1] #+ [200]
+state_space_min = [-1, -1, -1, -1] + [1]
+state_space_max = [1, 1, 1, 1] + [200]
 reward_space_min = [0]
 reward_space_max = [1]
 
@@ -45,4 +45,4 @@ agent = AgentDiscrete(name, action_type, num_of_action_values, action_space_min,
                       discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, next_learn_factor=next_learn_factor,
                       debug=debug)
 
-Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=profile, enable_eposide_timestep=False, noise_power=noise_power)
+Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=profile, enable_eposide_timestep=True, noise_power=noise_power)
