@@ -13,8 +13,9 @@ class AgentDiscrete():
     # ------------------------- Initialization -------------------------
 
     def __init__(self, name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
+                 value_hidden_layer_sizes = [256, 128, 64, 32], policy_hidden_layer_sizes = [256, 128, 64, 32],
                  batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
-                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, next_learn_factor=0.0,
+                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_delay=1, next_learn_factor=0.0, randomness=1.0,
                  debug=False):
 
         self.debug = debug
@@ -33,10 +34,12 @@ class AgentDiscrete():
         self.discount = discount
         self.value_learn_rate = value_learn_rate
         self.policy_learn_rate = policy_learn_rate
+        self.policy_delay = policy_delay
         self.learn_iterations = learn_iterations
         self.memory_buffer_size = memory_buffer_size
         self.batch_size = batch_size
         self.next_learn_factor = next_learn_factor
+        self.randomness = randomness
         self.quantize_actions = True if action_type == 'continuous' else False
 
         # dim1 = variables
@@ -67,6 +70,8 @@ class AgentDiscrete():
         self.reward_space_min_array = np.array(self.reward_space_min)
         self.reward_space_max_array = np.array(self.reward_space_max)
 
+        self.value_layer_sizes = [self.num_of_states] + value_hidden_layer_sizes + [np.prod(self.num_of_action_values)]
+        self.policy_layer_sizes = [self.num_of_states] + policy_hidden_layer_sizes + [np.prod(self.num_of_action_values)]
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print('Using device:', self.device)
 
@@ -85,7 +90,11 @@ class AgentDiscrete():
                         'discount': self.discount,
                         'value_learn_rate': self.value_learn_rate,
                         'policy_learn_rate': self.policy_learn_rate,
-                        'next_learn_factor': self.next_learn_factor}
+                        'policy_delay': self.policy_delay,
+                        'next_learn_factor': self.next_learn_factor,
+                        'randomness': self.randomness,
+                        'value_layer_sizes': self.value_layer_sizes,
+                        'policy_layer_sizes': self.policy_layer_sizes}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
         self.batch_count = 1
@@ -106,9 +115,7 @@ class AgentDiscrete():
         self.policy.eval()
 
         with torch.no_grad():
-            policy_logits = self.policy(state)[0]
-
-            policy_probs_flat = torch.nn.functional.softmax(policy_logits, dim=-1)
+            policy_probs_flat = self.policy(state, a=self.randomness)[0]
             action_flat = torch.multinomial(policy_probs_flat, 1, replacement=True)
 
         out_action = action_flat.cpu().numpy()
@@ -182,8 +189,7 @@ class AgentDiscrete():
             # value forward pass
             values = self.value(state)
             values_sum = torch.gather(values, -1, action.long())
-            policy_logits = self.policy(next_state).detach()
-            policy_probs = torch.nn.functional.softmax(policy_logits, dim=-1)
+            policy_probs = self.policy(next_state, a=1.0).detach()
             values_next = self.value(next_state)
             values_next_sum = torch.sum(values_next * policy_probs, -1, keepdim=True)
             values_diff = values_sum - values_next_sum * self.discount * (1.0 - done)
@@ -199,22 +205,23 @@ class AgentDiscrete():
             # log value results
             self.tensor_board.add_scalar('Learn/value_avg', value_avg, self.batch_count)
             self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('Learn/value_loss_div_value_avg', value_loss.item() / value_avg, self.batch_count)
 
-            # policy forward pass
-            policy_logits = self.policy(state)
-            policy_probs = torch.nn.functional.softmax(policy_logits, dim=-1)
-            values = self.value(state).detach()
-            values_mean = values - torch.mean(values, -1, keepdim=True).detach()
-            values_sum = torch.sum(values_mean * policy_probs, -1, keepdim=True)
+            if self.batch_count % self.policy_delay == 0:
+                # policy forward pass
+                policy_probs = self.policy(state, a=1.0)
+                values = self.value(state).detach()
+                values_mean = values - torch.mean(values, -1, keepdim=True).detach()
+                values_sum = torch.sum(values_mean * policy_probs, -1, keepdim=True)
 
-            # optimize policy
-            self.policy_optimizer.zero_grad()
-            policy_loss = self.policy_criterion(values_sum) / value_loss.item()
-            policy_loss.backward()
-            self.policy_optimizer.step()
+                # optimize policy
+                self.policy_optimizer.zero_grad()
+                policy_loss = self.policy_criterion(values_sum)
+                policy_loss.backward()
+                self.policy_optimizer.step()
 
-            # log policy results
-            self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
+                # log policy results
+                self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
 
             self.batch_count += 1
 
@@ -239,24 +246,22 @@ class AgentDiscrete():
 
         class Net(torch.nn.Module):
 
-            def __init__(self, num_of_states, num_of_action_values):
+            def __init__(self, layer_sizes):
                 super(Net, self).__init__()
-                self.num_of_action_values = num_of_action_values
-                self.fc1 = torch.nn.Linear(num_of_states, 256)
-                self.fc2 = torch.nn.Linear(256, 128)
-                self.fc3 = torch.nn.Linear(128, 64)
-                self.fc4 = torch.nn.Linear(64, 32)
-                self.fc5 = torch.nn.Linear(32, np.prod(self.num_of_action_values))
+                linear_layers = [torch.nn.Linear(in_f, out_f) for in_f, out_f in zip(layer_sizes[:-1], layer_sizes[1:])]
+                all_layers = []
+                for layer in linear_layers:
+                    all_layers.append(layer)
+                    all_layers.append(torch.nn.ReLU())
+                del all_layers[-1]
+                self.layers = torch.nn.Sequential(*all_layers)
+                pass
 
             def forward(self, state_input):
-                x = torch.relu(self.fc1(state_input))
-                x = torch.relu(self.fc2(x))
-                x = torch.relu(self.fc3(x))
-                x = torch.relu(self.fc4(x))
-                x = self.fc5(x)
+                x = self.layers(state_input)
                 return x
 
-        self.value = Net(self.num_of_states, self.num_of_action_values).to(self.device)
+        self.value = Net(self.value_layer_sizes).to(self.device)
 
         if self.value_filename.is_file():
             # Load value network
@@ -278,24 +283,23 @@ class AgentDiscrete():
 
         class Net(torch.nn.Module):
 
-            def __init__(self, num_of_states, num_of_action_values):
+            def __init__(self, layer_sizes):
                 super(Net, self).__init__()
-                self.num_of_action_values = num_of_action_values
-                self.fc1 = torch.nn.Linear(num_of_states, 256)
-                self.fc2 = torch.nn.Linear(256, 128)
-                self.fc3 = torch.nn.Linear(128, 64)
-                self.fc4 = torch.nn.Linear(64, 32)
-                self.fc5 = torch.nn.Linear(32, np.prod(self.num_of_action_values))
+                linear_layers = [torch.nn.Linear(in_f, out_f) for in_f, out_f in zip(layer_sizes[:-1], layer_sizes[1:])]
+                all_layers = []
+                for layer in linear_layers:
+                    all_layers.append(layer)
+                    all_layers.append(torch.nn.ReLU())
+                del all_layers[-1]
+                self.layers = torch.nn.Sequential(*all_layers)
+                pass
 
-            def forward(self, state_input):
-                x = torch.relu(self.fc1(state_input))
-                x = torch.relu(self.fc2(x))
-                x = torch.relu(self.fc3(x))
-                x = torch.relu(self.fc4(x))
-                x = self.fc5(x)
+            def forward(self, state_input, a=1.0):
+                x = self.layers(state_input)
+                x = torch.softmax(x * a, dim=-1)
                 return x
 
-        self.policy = Net(self.num_of_states, self.num_of_action_values).to(self.device)
+        self.policy = Net(self.policy_layer_sizes).to(self.device)
 
         if self.policy_filename.is_file():
             # Load value network
@@ -306,11 +310,11 @@ class AgentDiscrete():
             # Build value network
             print('No max policy network loaded from file')
 
-        def maxminimize_loss(output):
+        def maximize_loss(output):
             loss = -torch.mean(output)
             return loss
 
-        self.policy_criterion = maxminimize_loss
+        self.policy_criterion = maximize_loss
         self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.policy_learn_rate)
 
         pass
@@ -318,7 +322,6 @@ class AgentDiscrete():
     def save_networks(self):
 
         torch.save(self.value.state_dict(), self.value_filename)
-        torch.save(self.policy.state_dict(), self.policy_filename)
         torch.save(self.policy.state_dict(), self.policy_filename)
 
         pass

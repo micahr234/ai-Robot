@@ -23,7 +23,7 @@ class ExperienceMemory():
             print('Loading experience buffer from file ' + str(self.filename))
             buffer = torch.load(self.filename)
 
-            self.position = min(self.capacity, buffer['position'])
+            self.position = min(self.capacity-1, buffer['position'])
             self.length = min(self.capacity, buffer['length'])
             index = self.length
             self.memory_state[0:index, :] = buffer['state'][0:index, :]

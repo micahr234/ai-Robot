@@ -13,8 +13,9 @@ class AgentContinuous():
     # ------------------------- Initialization -------------------------
 
     def __init__(self, name, action_type, num_of_action_values, action_space_min, action_space_max, state_space_min, state_space_max, reward_space_min, reward_space_max,
+                 value_hidden_layer_sizes=[256, 128, 64, 32], policy_hidden_layer_sizes=[256, 128, 64, 32],
                  batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
-                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, next_learn_factor=0.0,
+                 discount=0.999, value_learn_rate=0.0001, policy_learn_rate=0.00001, policy_delay=1, next_learn_factor=0.0, randomness=0.0,
                  debug=False):
 
         self.debug = debug
@@ -33,10 +34,12 @@ class AgentContinuous():
         self.discount = discount
         self.value_learn_rate = value_learn_rate
         self.policy_learn_rate = policy_learn_rate
+        self.policy_delay = policy_delay
         self.learn_iterations = learn_iterations
         self.memory_buffer_size = memory_buffer_size
         self.batch_size = batch_size
         self.next_learn_factor = next_learn_factor
+        self.randomness = randomness
         self.unquantize_actions = True if action_type == 'discrete' else False
 
         # dim1 = variables
@@ -62,6 +65,8 @@ class AgentContinuous():
         self.reward_space_min_array = np.array(self.reward_space_min)
         self.reward_space_max_array = np.array(self.reward_space_max)
 
+        self.value_layer_sizes = [self.num_of_states + self.num_of_actions] + value_hidden_layer_sizes + [1]
+        self.policy_layer_sizes = [self.num_of_states] + policy_hidden_layer_sizes + [self.num_of_actions]
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print('Using device:', self.device)
 
@@ -80,7 +85,11 @@ class AgentContinuous():
                         'discount': self.discount,
                         'value_learn_rate': self.value_learn_rate,
                         'policy_learn_rate': self.policy_learn_rate,
-                        'next_learn_factor': self.next_learn_factor}
+                        'policy_delay': self.policy_delay,
+                        'next_learn_factor': self.next_learn_factor,
+                        'randomness': self.randomness,
+                        'value_layer_sizes': self.value_layer_sizes,
+                        'policy_layer_sizes': self.policy_layer_sizes}
         self.tensor_board.add_text('Hyper Params', str(hyper_params), 0)
 
         self.batch_count = 1
@@ -101,7 +110,7 @@ class AgentContinuous():
         self.policy.eval()
 
         with torch.no_grad():
-            action = self.policy(state)[0]
+            action = self.policy(state, a=self.randomness)[0]
 
         out_action = action.cpu().numpy()
         out_action = self.scale(out_action, -1, 1, self.action_space_min_array, self.action_space_max_array)
@@ -167,7 +176,7 @@ class AgentContinuous():
 
             # value forward pass
             values = self.value(state, action)
-            actions_next = self.policy(next_state)
+            actions_next = self.policy(next_state, a=0.0)
             values_next = self.value(next_state, actions_next)
             values_diff = values - values_next * self.discount * (1.0 - done)
             value_avg = torch.mean(values).detach()
@@ -182,19 +191,22 @@ class AgentContinuous():
             # log value results
             self.tensor_board.add_scalar('Learn/value_avg', value_avg, self.batch_count)
             self.tensor_board.add_scalar('Learn/value_loss', value_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('Learn/value_loss_div_value_avg', value_loss.item() / value_avg, self.batch_count)
 
-            # policy forward pass
-            actions_current = self.policy(state)
-            values = self.value(state, actions_current)
+            if self.batch_count % self.policy_delay == 0:
+                # policy forward pass
+                actions_current = self.policy(state, a=0.0)
+                values = self.value(state, actions_current)
+                #look into advantage
 
-            # optimize policy
-            self.policy_optimizer.zero_grad()
-            policy_loss = self.max_policy_criterion(values) / value_loss.item()
-            policy_loss.backward()
-            self.policy_optimizer.step()
+                # optimize policy
+                self.policy_optimizer.zero_grad()
+                policy_loss = self.policy_criterion(values)
+                policy_loss.backward()
+                self.policy_optimizer.step()
 
-            # log policy results
-            self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
+                # log policy results
+                self.tensor_board.add_scalar('Learn/policy_loss', policy_loss.item(), self.batch_count)
 
             self.batch_count += 1
 
@@ -219,24 +231,23 @@ class AgentContinuous():
 
         class Net(torch.nn.Module):
 
-            def __init__(self, num_of_states, num_of_actions):
+            def __init__(self, layer_sizes):
                 super(Net, self).__init__()
-                self.fc1 = torch.nn.Linear(num_of_states + num_of_actions, 256)
-                self.fc2 = torch.nn.Linear(256, 128)
-                self.fc3 = torch.nn.Linear(128, 64)
-                self.fc4 = torch.nn.Linear(64, 32)
-                self.fc5 = torch.nn.Linear(32, 1)
+                linear_layers = [torch.nn.Linear(in_f, out_f) for in_f, out_f in zip(layer_sizes[:-1], layer_sizes[1:])]
+                all_layers = []
+                for layer in linear_layers:
+                    all_layers.append(layer)
+                    all_layers.append(torch.nn.ReLU())
+                del all_layers[-1]
+                self.layers = torch.nn.Sequential(*all_layers)
+                pass
 
             def forward(self, state_input, action_input):
-                x = torch.cat((state_input, action_input), 1)
-                x = torch.relu(self.fc1(x))
-                x = torch.relu(self.fc2(x))
-                x = torch.relu(self.fc3(x))
-                x = torch.relu(self.fc4(x))
-                x = self.fc5(x)
+                x = torch.cat((state_input, action_input), dim=1)
+                x = self.layers(x)
                 return x
 
-        self.value = Net(self.num_of_states, self.num_of_actions).to(self.device)
+        self.value = Net(self.value_layer_sizes).to(self.device)
 
         if self.value_filename.is_file():
             # Load value network
@@ -258,23 +269,23 @@ class AgentContinuous():
 
         class Net(torch.nn.Module):
 
-            def __init__(self, num_of_states, num_of_actions):
+            def __init__(self, layer_sizes):
                 super(Net, self).__init__()
-                self.fc1 = torch.nn.Linear(num_of_states, 256)
-                self.fc2 = torch.nn.Linear(256, 128)
-                self.fc3 = torch.nn.Linear(128, 64)
-                self.fc4 = torch.nn.Linear(64, 32)
-                self.fc5 = torch.nn.Linear(32, num_of_actions)
+                linear_layers = [torch.nn.Linear(in_f, out_f) for in_f, out_f in zip(layer_sizes[:-1], layer_sizes[1:])]
+                all_layers = []
+                for layer in linear_layers:
+                    all_layers.append(layer)
+                    all_layers.append(torch.nn.ReLU())
+                del all_layers[-1]
+                self.layers = torch.nn.Sequential(*all_layers)
+                pass
 
-            def forward(self, state_input):
-                x = torch.relu(self.fc1(state_input))
-                x = torch.relu(self.fc2(x))
-                x = torch.relu(self.fc3(x))
-                x = torch.relu(self.fc4(x))
-                x = torch.tanh(self.fc5(x))
+            def forward(self, state_input, a=0.0):
+                x = self.layers(state_input)
+                x = x + a * torch.randn_like(x, requires_grad=False)
                 return x
 
-        self.policy = Net(self.num_of_states, self.num_of_actions).to(self.device)
+        self.policy = Net(self.policy_layer_sizes).to(self.device)
 
         if self.policy_filename.is_file():
             # Load value network
@@ -289,7 +300,7 @@ class AgentContinuous():
             loss = -torch.mean(output)
             return loss
 
-        self.max_policy_criterion = maximize_loss
+        self.policy_criterion = maximize_loss
         self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.policy_learn_rate)
 
         pass
