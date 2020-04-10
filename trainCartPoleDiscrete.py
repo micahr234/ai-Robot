@@ -7,7 +7,7 @@ from run import *
 from utils import *
 
 #Params
-name = "CartPoleDiscrete-125"
+name = "CartPoleDiscrete-126"
 action_type = 'continuous'
 
 max_timestep = 100000

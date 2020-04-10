@@ -29,8 +29,8 @@ policy_hidden_layer_sizes = [256, 128, 64]
 num_of_action_values = [50] # For continuous environments
 action_space_min = [-1]
 action_space_max = [1]
-state_space_min = [-1]*5 #+ [1]
-state_space_max = [1]*5 #+ [200]
+state_space_min = [-1]*5 + [1]
+state_space_max = [1]*5 + [200]
 reward_space_min = [-1]
 reward_space_max = [1]
 
@@ -48,4 +48,4 @@ agent = AgentDiscrete(name, action_type, num_of_action_values, action_space_min,
                       discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, policy_delay=policy_delay, next_learn_factor=next_learn_factor, randomness=randomness,
                       debug=debug)
 
-Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=profile, enable_eposide_timestep=False, noise_power=noise_power)
+Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=profile, enable_eposide_timestep=True, noise_power=noise_power)

@@ -243,7 +243,7 @@ class AgentContinuous():
                 pass
 
             def forward(self, state_input, action_input):
-                x = torch.cat((state_input, action_input), dim=1)
+                x = torch.cat((state_input, action_input), dim=-1)
                 x = self.layers(x)
                 return x
 
@@ -276,13 +276,14 @@ class AgentContinuous():
                 for layer in linear_layers:
                     all_layers.append(layer)
                     all_layers.append(torch.nn.ReLU())
-                del all_layers[-1]
+                all_layers[-1] = torch.nn.Tanh()
                 self.layers = torch.nn.Sequential(*all_layers)
                 pass
 
             def forward(self, state_input, a=0.0):
                 x = self.layers(state_input)
                 x = x + a * torch.randn_like(x, requires_grad=False)
+                x = torch.nn.functional.hardtanh(x)
                 return x
 
         self.policy = Net(self.policy_layer_sizes).to(self.device)

@@ -27,8 +27,8 @@ policy_hidden_layer_sizes = [256, 128, 64, 32]
 
 action_space_min = [-1]*3
 action_space_max = [1]*3
-state_space_min = [-1]*15 #+ [1]
-state_space_max = [1]*15 #+ [1000]
+state_space_min = [-1]*15 + [1]
+state_space_max = [1]*15 + [1000]
 reward_space_min = [-1]
 reward_space_max = [1]
 
@@ -46,4 +46,4 @@ agent = AgentContinuous(name, action_type, None, action_space_min, action_space_
                         discount=discount, value_learn_rate=value_learn_rate, policy_learn_rate=policy_learn_rate, policy_delay=policy_delay, next_learn_factor=next_learn_factor, randomness=randomness,
                         debug=debug)
 
-Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=profile, enable_eposide_timestep=False, noise_power=noise_power)
+Run(env, agent, max_timestep, learn_interval, save_interval, render=render, delay=delay, profile=profile, enable_eposide_timestep=True, noise_power=noise_power)

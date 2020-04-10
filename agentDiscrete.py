@@ -115,8 +115,8 @@ class AgentDiscrete():
         self.policy.eval()
 
         with torch.no_grad():
-            policy_probs_flat = self.policy(state, a=self.randomness)[0]
-            action_flat = torch.multinomial(policy_probs_flat, 1, replacement=True)
+            policy_probs = self.policy(state, a=self.randomness)[0]
+            action_flat = torch.multinomial(policy_probs, 1, replacement=True)
 
         out_action = action_flat.cpu().numpy()
         out_action = self.action_unflatten(out_action)
