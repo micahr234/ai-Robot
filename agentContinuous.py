@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import time
+import copy
 from experienceMemory import *
 
 #Add tanh to output to limit output
@@ -16,9 +17,9 @@ class AgentContinuous():
                  value_hidden_layer_sizes=[256, 128, 64, 32], policy_hidden_layer_sizes=[256, 128, 64, 32], preprocess_hidden_layer_sizes=[20, 50],
                  batch_size=1000, learn_iterations=10, memory_buffer_size=100000,
                  discount=1.0, value_learn_rate=0.0001, policy_learn_rate=0.0001, preprocess_learn_rate=0.0001, policy_delay=10, next_learn_factor=0.8, randomness=0.1,
-                 debug=False):
+                 verbosity=False):
 
-        self.debug = debug
+        self.verbosity = verbosity
 
         self.name = str(name)
 
@@ -50,12 +51,16 @@ class AgentContinuous():
         self.value_layer_sizes = [self.preprocess_layer_sizes[-1] + self.num_of_actions] + value_hidden_layer_sizes + [1]
         self.policy_layer_sizes = [self.preprocess_layer_sizes[-1]] + policy_hidden_layer_sizes + [self.num_of_actions]
 
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print('Using device:', self.device)
+        self.train_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.act_device = torch.device('cpu')
+        print('Train device:', self.train_device)
+        print('Act device:', self.act_device)
 
         self.build_preprocess_network()
         self.build_value_network()
         self.build_policy_network()
+        self.policy_act_copy = copy.deepcopy(self.policy).to(self.act_device)
+        self.preprocess_act_copy = copy.deepcopy(self.preprocess).to(self.act_device)
 
         self.memory = ExperienceMemory(self.memory_buffer_size, self.memory_buffer_filename, self.num_of_states, self.num_of_actions)
 
@@ -89,14 +94,14 @@ class AgentContinuous():
     def act(self, in_state):
 
         state = np.array(in_state, ndmin=2)
-        state = torch.from_numpy(state).float().detach().to(self.device)
+        state = torch.from_numpy(state).float().detach().to(self.act_device)
 
         self.preprocess.eval()
         self.policy.eval()
 
         with torch.no_grad():
-            state_reconstructed_norm, state_mu, state_logvar, state_latent = self.preprocess(state)
-            action = self.policy(state_mu, a=self.randomness)[0]
+            state_reconstructed_norm, state_mu, state_logvar, state_latent = self.preprocess_act_copy(state)
+            action = self.policy_act_copy(state_mu, a=self.randomness)[0]
 
         out_action = action.cpu().numpy()
 
@@ -107,7 +112,7 @@ class AgentContinuous():
     def record(self, in_state, in_action, in_reward, in_next_state, in_done):
 
         # Log experience
-        if self.debug:
+        if self.verbosity:
             for n in range(self.num_of_states):
                 self.tensor_board.add_scalar('Record/state' + str(n), in_state[n], self.record_count)
                 self.tensor_board.add_scalar('Record/next_state' + str(n), in_next_state[n], self.record_count)
@@ -141,14 +146,26 @@ class AgentContinuous():
         else:
             print('Agent ' + str(self.name) + ' learning fom ' + str(len(self.memory)) + ' samples')
 
-        # set the model to train mode
         self.preprocess.train()
         self.value.train()
         self.policy.train()
 
+        state_all_batches, action_all_batches, reward_all_batches, next_state_all_batches, done_all_batches = self.memory.sample(self.batch_size * self.learn_iterations)
+        state_all_batches = state_all_batches.to(self.train_device, non_blocking=True)
+        action_all_batches = action_all_batches.to(self.train_device, non_blocking=True)
+        reward_all_batches = reward_all_batches.to(self.train_device, non_blocking=True)
+        next_state_all_batches = next_state_all_batches.to(self.train_device, non_blocking=True)
+        done_all_batches = done_all_batches.to(self.train_device, non_blocking=True)
+
         for batch_num in range(1, self.learn_iterations + 1):
 
-            state, action, reward, next_state, done = self.memory.sample(self.batch_size)
+            batch_LL = (batch_num - 1) * self.learn_iterations
+            batch_UL = batch_num * self.learn_iterations
+            state = state_all_batches[batch_LL:batch_UL, :]
+            action = action_all_batches[batch_LL:batch_UL, :]
+            reward = reward_all_batches[batch_LL:batch_UL, :]
+            next_state = next_state_all_batches[batch_LL:batch_UL, :]
+            done = done_all_batches[batch_LL:batch_UL, :]
 
             # preprocessor forward pass
             state_reconstructed, state_mu, state_logvar, state_latent = self.preprocess(state)
@@ -162,9 +179,9 @@ class AgentContinuous():
                 td = target.detach()
                 target_std = torch.std(td, dim=0)
                 #print(target_std)
-                input.register_hook(lambda grad: print(grad))
+                #input.register_hook(lambda grad: print(grad))
                 input.register_hook(lambda grad: grad / (target_std ** 2))
-                input.register_hook(lambda grad: print(grad))
+                #input.register_hook(lambda grad: print(grad))
                 loss = (td - input) ** 2
                 loss_mean = torch.mean(loss)
                 return loss_mean
@@ -216,6 +233,9 @@ class AgentContinuous():
                 self.tensor_board.add_scalar('Learn_Policy/loss', policy_loss.item(), self.batch_count)
 
             self.batch_count += 1
+
+        self.policy_act_copy.load_state_dict(self.policy.state_dict())
+        self.preprocess_act_copy.load_state_dict(self.preprocess.state_dict())
 
         # print summary
         print('Agent finished learning')
@@ -289,7 +309,7 @@ class AgentContinuous():
                 reconstructed_state_input = self.decode(z)
                 return reconstructed_state_input, mu, logvar, z
 
-        self.preprocess = Net(self.preprocess_layer_sizes).to(self.device)
+        self.preprocess = Net(self.preprocess_layer_sizes).to(self.train_device)
 
         if self.preprocess_filename.is_file():
             # Load preprocess network
@@ -324,7 +344,7 @@ class AgentContinuous():
                 x = self.layers(x)
                 return x
 
-        self.value = Net(self.value_layer_sizes).to(self.device)
+        self.value = Net(self.value_layer_sizes).to(self.train_device)
 
         if self.value_filename.is_file():
             # Load value network
@@ -361,7 +381,7 @@ class AgentContinuous():
                 x = torch.nn.functional.hardtanh(x)
                 return x
 
-        self.policy = Net(self.policy_layer_sizes).to(self.device)
+        self.policy = Net(self.policy_layer_sizes).to(self.train_device)
 
         if self.policy_filename.is_file():
             # Load value network
