@@ -174,23 +174,19 @@ class AgentContinuous():
                 next_state_reconstructed, next_state_mu, next_state_logvar, next_state_latent = self.preprocess(next_state)
                 next_state_preprocessed = next_state_mu.detach()
 
-            #to be tested
-            def c_loss(input, target):
-                td = target.detach()
-                target_std = torch.std(td, dim=0)
-                #print(target_std)
-                #input.register_hook(lambda grad: print(grad))
-                input.register_hook(lambda grad: grad / (target_std ** 2))
-                #input.register_hook(lambda grad: print(grad))
-                loss = (td - input) ** 2
+            def norm_mse_loss(input, target):
+                target = target.detach()
+                target_std, target_mean = torch.std_mean(target, dim=0)
+                target_normalized = (target - target_mean) / target_std
+                loss = (target_normalized - input) ** 2
                 loss_mean = torch.mean(loss)
                 return loss_mean
 
             # optimize preprocessor
             self.preprocess_optimizer.zero_grad()
             preprocess_latent_loss = -0.5 * torch.mean(1 + state_logvar - state_mu.pow(2) - state_logvar.exp())
-            preprocess_reconstruction_loss = c_loss(state_reconstructed, state)
-            preprocess_loss = preprocess_reconstruction_loss #+ preprocess_latent_loss
+            preprocess_reconstruction_loss = norm_mse_loss(state_reconstructed, state)
+            preprocess_loss = preprocess_reconstruction_loss + preprocess_latent_loss * 0.1
             preprocess_loss.backward()
             self.preprocess_optimizer.step()
 
