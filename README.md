@@ -11,6 +11,7 @@ Installation instructions for Windows:
 3. Install gym
 
        pip install gym
+       pip install git+https://github.com/Kojoley/atari-py.git
       
 4. Install Microsoft Visual C++ 14.0
 

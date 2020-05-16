@@ -1,10 +1,8 @@
 import numpy as np
 from pathlib import Path
 import torch
-from collections import namedtuple
-import random
 
-class ExperienceMemory():
+class Memory():
 
     def __init__(self, capacity, filename, num_of_states, num_of_actions):
         self.position = 0
