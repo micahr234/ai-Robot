@@ -9,8 +9,10 @@ import gym
 import pybullet
 import pybullet_envs
 import pybullet_data
+from mlagents_envs.environment import UnityEnvironment
+from gym_unity.envs import UnityToGymWrapper
+
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 from agent import Agent
 
@@ -35,6 +37,9 @@ def Execute(**params):
     assert 'num_of_latent_states' in params, '"num_of_latent_states" variable required'
     num_of_latent_states = params['num_of_latent_states']
     log_params['num_of_latent_states'] = num_of_latent_states
+    assert 'num_of_random_states' in params, '"num_of_random_states" variable required'
+    num_of_random_states = params['num_of_random_states']
+    log_params['num_of_random_states'] = num_of_random_states
 
     assert 'preprocess_fwd_net' in params, '"preprocess_fwd_net" variable required'
     preprocess_fwd_net = params['preprocess_fwd_net']
@@ -64,28 +69,31 @@ def Execute(**params):
     save = params['save'] if 'save' in params else False
     episode_timestamp = params['episode_timestamp'] if 'episode_timestamp' in params else True
     log_params['episode_timestamp'] = episode_timestamp
-    action_randomness = params['action_randomness'] if 'action_randomness' in params else 0.0
-    log_params['action_randomness'] = action_randomness
+    policy_learn_beta = params['policy_learn_beta'] if 'policy_learn_beta' in params else 0.0
+    log_params['policy_learn_beta'] = policy_learn_beta
     batches = params['batches'] if 'batches' in params else 200
     log_params['batches'] = batches
     batch_size = params['batch_size'] if 'batch_size' in params else 2000
     log_params['batch_size'] = batch_size
     memory_buffer_size = params['memory_buffer_size'] if 'memory_buffer_size' in params else 10000
     log_params['memory_buffer_size'] = memory_buffer_size
-    value_learn_rate = params['value_learn_rate'] if 'value_learn_rate' in params else 0.001
-    log_params['value_learn_rate'] = value_learn_rate
-    policy_learn_rate = params['policy_learn_rate'] if 'policy_learn_rate' in params else 0.001
-    log_params['policy_learn_rate'] = policy_learn_rate
-    preprocess_learn_rate = params['preprocess_learn_rate'] if 'preprocess_learn_rate' in params else 0.001
+
+    preprocess_learn_rate = params['preprocess_learn_rate'] if 'preprocess_learn_rate' in params else lambda batch: 0.0001
     log_params['preprocess_learn_rate'] = preprocess_learn_rate
-    discount = params['discount'] if 'discount' in params else 1.0
-    log_params['discount'] = discount
+    preprocess_latent_learn_factor = params['preprocess_latent_learn_factor'] if 'preprocess_latent_learn_factor' in params else lambda batch: 1.0
+    log_params['preprocess_latent_learn_factor'] = preprocess_latent_learn_factor
+    policy_value_learn_rate = params['policy_value_learn_rate'] if 'policy_value_learn_rate' in params else lambda batch: 0.0001
+    log_params['policy_value_learn_rate'] = policy_value_learn_rate
+    policy_entropy_learn_factor = params['policy_entropy_learn_factor'] if 'policy_entropy_learn_factor' in params else lambda batch: 0.0001
+    log_params['policy_entropy_learn_factor'] = policy_entropy_learn_factor
     policy_delay = params['policy_delay'] if 'policy_delay' in params else 10
     log_params['policy_delay'] = policy_delay
-    preprocess_learn_beta = params['preprocess_learn_beta'] if 'preprocess_learn_beta' in params else 1.0
-    log_params['preprocess_learn_beta'] = preprocess_learn_beta
-    next_learn_factor = params['next_learn_factor'] if 'next_learn_factor' in params else 0.8
-    log_params['next_learn_factor'] = next_learn_factor
+    value_learn_rate = params['value_learn_rate'] if 'value_learn_rate' in params else lambda batch: 0.0001
+    log_params['value_learn_rate'] = value_learn_rate
+    value_next_learn_factor = params['value_next_learn_factor'] if 'value_next_learn_factor' in params else lambda batch: 0.8
+    log_params['value_next_learn_factor'] = value_next_learn_factor
+    discount = params['discount'] if 'discount' in params else lambda batch: 0.99
+    log_params['discount'] = discount
 
     print('')
 
@@ -94,7 +102,7 @@ def Execute(**params):
 
     print('Creating Tensor Board Log')
     tensor_board_dir = Path.cwd() / 'runs' / instance_name / str(time.time())
-    tensor_board = SummaryWriter(tensor_board_dir, max_queue=10000, flush_secs=60)
+    tensor_board = torch.utils.tensorboard.SummaryWriter(tensor_board_dir, max_queue=10000, flush_secs=60)
     tensor_board.add_text('Hyper Params', str(log_params), 0)
     print('')
 
@@ -103,6 +111,12 @@ def Execute(**params):
         env = gym.make(environment_name, renders=render, discrete_actions=False)
     elif environment_name == 'HopperBulletEnv-v0':
         env = gym.make(environment_name, render=render)
+    elif environment_name == 'Unity':
+        unity_env = UnityEnvironment(None, seed=1, side_channels=[])
+        env = UnityToGymWrapper(unity_env, False, False, False, False)
+    elif environment_name == 'CubeChase':
+        unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', seed=1, side_channels=[])
+        env = UnityToGymWrapper(unity_env, False, False, False, False)
     else:
         env = gym.make(environment_name)
     print('')
@@ -110,10 +124,11 @@ def Execute(**params):
     print('Creating agent: ' + agent_name)
     if agent_name == 'agent':
         agent = Agent(
-            agent_name,
+            instance_name,
             num_of_actions,
             num_of_states,
             num_of_latent_states,
+            num_of_random_states,
             preprocess_fwd_net,
             preprocess_rev_net,
             value_net,
@@ -122,20 +137,19 @@ def Execute(**params):
             batch_size=batch_size,
             batches=batches,
             memory_buffer_size=memory_buffer_size,
-            value_learn_rate=value_learn_rate,
-            policy_learn_rate=policy_learn_rate,
             preprocess_learn_rate=preprocess_learn_rate,
-            discount=discount,
+            preprocess_latent_learn_factor=preprocess_latent_learn_factor,
+            policy_value_learn_rate=policy_value_learn_rate,
+            policy_entropy_learn_factor=policy_entropy_learn_factor,
             policy_delay=policy_delay,
-            preprocess_learn_beta=preprocess_learn_beta,
-            next_learn_factor=next_learn_factor,
-            action_randomness=action_randomness,
+            value_learn_rate=value_learn_rate,
+            value_next_learn_factor=value_next_learn_factor,
+            discount=discount,
             verbosity=verbosity
         )
     else:
         raise ValueError('Agent name in not valid')
     print('')
-
 
     def Loop():
 
@@ -174,10 +188,9 @@ def Execute(**params):
             if render: env.render()
             if render: time.sleep(render_delay)
 
-            if done:
-                if (timestep / learn_interval) >= (learn_count + 1):
-                    learn_count += 1
-                    agent.learn()
+            if (timestep / learn_interval) >= (learn_count + 1):
+                learn_count += 1
+                agent.learn()
                 if save:
                     agent.save()
 

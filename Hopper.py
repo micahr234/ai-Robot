@@ -48,7 +48,6 @@ Execute(
     learn_interval=2000,
     save=False,
     episode_timestamp=True,
-    action_noise=0.1,
 
     batches=200,
     batch_size=4000,
@@ -60,7 +59,7 @@ Execute(
     policy_delay=10,
     preprocess_learn_beta=2.0,
     next_learn_factor=0.9,
-    action_randomness=0.1,
+    policy_learn_beta=0.1,
 
     num_of_actions=num_of_actions,
     num_of_states=num_of_states,
