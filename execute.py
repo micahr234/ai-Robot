@@ -1,9 +1,9 @@
-import argparse
 import cProfile
 import os
 import time
 import numpy as np
 from pathlib import Path
+from collections import deque
 
 import gym
 import pybullet
@@ -24,16 +24,13 @@ def Execute(**params):
     assert 'environment_name' in params, '"environment_name" variable required'
     environment_name = params['environment_name']
     log_params['environment_name'] = environment_name
+    assert 'previous_states' in params, '"previous_states" variable required'
+    previous_states = params['previous_states']
+    log_params['previous_states'] = previous_states
     assert 'agent_name' in params, '"agent_name" variable required'
     agent_name = params['agent_name']
     log_params['agent_name'] = agent_name
 
-    assert 'num_of_actions' in params, '"num_of_actions" variable required'
-    num_of_actions = params['num_of_actions']
-    log_params['num_of_actions'] = num_of_actions
-    assert 'num_of_states' in params, '"num_of_states" variable required'
-    num_of_states = params['num_of_states']
-    log_params['num_of_states'] = num_of_states
     assert 'num_of_latent_states' in params, '"num_of_latent_states" variable required'
     num_of_latent_states = params['num_of_latent_states']
     log_params['num_of_latent_states'] = num_of_latent_states
@@ -53,6 +50,15 @@ def Execute(**params):
     assert 'policy_net' in params, '"policy_net" variable required'
     policy_net = params['policy_net']
     log_params['policy_net'] = policy_net
+
+    assert 'state_input_transform' in params, '"state_input_transform" variable required'
+    state_input_transform = params['state_input_transform']
+    assert 'reward_input_transform' in params, '"reward_input_transform" variable required'
+    reward_input_transform = params['reward_input_transform']
+    assert 'action_input_transform' in params, '"action_input_transform" variable required'
+    action_input_transform = params['action_input_transform']
+    assert 'action_output_transform' in params, '"action_output_transform" variable required'
+    action_output_transform = params['action_output_transform']
 
     # Assign these variables default values
     instance_name = params['instance_name'] if 'instance_name' in params else environment_name + agent_name + str(time.time())
@@ -114,6 +120,9 @@ def Execute(**params):
     elif environment_name == 'Unity':
         unity_env = UnityEnvironment(None, seed=1, side_channels=[])
         env = UnityToGymWrapper(unity_env, False, False, False, False)
+    elif environment_name == 'UnityVisual':
+        unity_env = UnityEnvironment(None, seed=1, side_channels=[])
+        env = UnityToGymWrapper(unity_env, True, False, False, True)
     elif environment_name == 'CubeChase':
         unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', seed=1, side_channels=[])
         env = UnityToGymWrapper(unity_env, False, False, False, False)
@@ -125,8 +134,6 @@ def Execute(**params):
     if agent_name == 'agent':
         agent = Agent(
             instance_name,
-            num_of_actions,
-            num_of_states,
             num_of_latent_states,
             num_of_random_states,
             preprocess_fwd_net,
@@ -145,54 +152,79 @@ def Execute(**params):
             value_learn_rate=value_learn_rate,
             value_next_learn_factor=value_next_learn_factor,
             discount=discount,
-            verbosity=verbosity
+            verbosity=verbosity,
+            state_input_transform=state_input_transform,
+            reward_input_transform=reward_input_transform,
+            action_input_transform=action_input_transform,
+            action_output_transform=action_output_transform
         )
     else:
         raise ValueError('Agent name in not valid')
     print('')
+    
+    def Record(tensor_board, timestep, state, action, reward, done, episode_timestep, episode_cumulative_reward):
+        
+        #if verbosity:
+        #    for n in range(self.num_of_states):
+        #        self.tensor_board.add_scalar('Record/state' + str(n), in_state[n], timestep)
+        #        self.tensor_board.add_scalar('Record/next_state' + str(n), in_next_state[n], timestep)
+        #    for n in range(self.num_of_actions):
+        #        self.tensor_board.add_scalar('Record/action' + str(n), in_action[n], timestep)
+        #    self.tensor_board.add_scalar('Record/reward', in_reward, timestep)
+        #    self.tensor_board.add_scalar('Record/in_done', in_done, timestep)
+        
+        if done:
+            print('Episode finished\t\tEpisode timestep: ' + str(episode_timestep) + '\t\tCumulative reward: ' + str(episode_cumulative_reward))
+            tensor_board.add_scalar('Record/cumulative_reward', episode_cumulative_reward, timestep)
 
     def Loop():
 
         action_space_min = np.array(env.action_space.low)
         action_space_max = np.array(env.action_space.high)
 
-        episode_timestep = 1
         done = True
-        learn_count = 0
+        learnstep = 1
+
+        state_buffer = deque(maxlen=previous_states)
+        next_state_buffer = deque(maxlen=previous_states)
 
         for timestep in range(1, max_timestep + 1):
-
-            episode_timestep += 1
 
             if done:
                 episode_timestep = 1
                 episode_cumulative_reward = 0
-                next_observation_partial = env.reset()
-                next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_observation_partial
+                next_state_partial = env.reset()
+                next_state = np.concatenate((next_state_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_state_partial
+                next_state_buffer.clear()
+                for i in range(0, previous_states):
+                    next_state_buffer.append(next_state)
 
                 if render: env.render()
                 if render: time.sleep(render_delay)
 
-            observation = next_observation
+            state = next_state
+            state_buffer = next_state_buffer
 
-            action = agent.act(observation)
-            scaled_action = (action / 2 + 0.5) * (action_space_max - action_space_min) + action_space_min
-            next_observation_partial, reward, done, info = env.step(scaled_action)
-            next_observation = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_observation_partial
-            agent.record(observation, action, reward, next_observation, done)
+            action = agent.act(state_buffer)
+            scaled_action = (np.array(action) / 2 + 0.5) * (action_space_max - action_space_min) + action_space_min
+            next_state_partial, reward, done, info = env.step(scaled_action)
+            next_state = np.concatenate((next_state_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_state_partial
+            next_state_buffer.append(next_state)
+            agent.record(state_buffer, action, reward, next_state_buffer, done)
 
             episode_cumulative_reward += reward
-            if done: print('Episode finished\t\tEpisode timestep: ' + str(episode_timestep) + '\t\tTimestep: ' + str(
-                timestep) + '\t\tTotal reward: ' + str(episode_cumulative_reward))
+            Record(tensor_board, timestep, state, action, reward, done, episode_timestep, episode_cumulative_reward)
 
             if render: env.render()
             if render: time.sleep(render_delay)
 
-            if (timestep / learn_interval) >= (learn_count + 1):
-                learn_count += 1
+            if (timestep / learn_interval) >= learnstep:
+                learnstep += 1
                 agent.learn()
                 if save:
                     agent.save()
+
+            episode_timestep += 1
 
         if save:
             agent.save()

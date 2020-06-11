@@ -1,18 +1,17 @@
-import numpy as np
 from pathlib import Path
 import torch
 
 class Memory():
 
-    def __init__(self, capacity, filename, num_of_states, num_of_actions):
+    def __init__(self, capacity, filename):
         self.position = 0
         self.length = 0
         self.capacity = capacity
-        self.memory_state = torch.empty([self.capacity, num_of_states], requires_grad=False)
-        self.memory_action = torch.empty([self.capacity, num_of_actions], requires_grad=False)
-        self.memory_reward = torch.empty([self.capacity, 1], requires_grad=False)
-        self.memory_next_state = torch.empty([self.capacity, num_of_states], requires_grad=False)
-        self.memory_done = torch.empty([self.capacity, 1], requires_grad=False)
+        self.memory_state = None
+        self.memory_action = None
+        self.memory_reward = None
+        self.memory_next_state = None
+        self.memory_done = None
 
         self.filename = Path(filename)
 
@@ -20,7 +19,7 @@ class Memory():
             # Load experience buffer
             print('Loading experience buffer from file ' + str(self.filename))
             buffer = torch.load(self.filename)
-
+            self.create(buffer['state'].shape[1:], buffer['action'].shape[1:])
             self.position = min(self.capacity-1, buffer['position'])
             self.length = min(self.capacity, buffer['length'])
             index = self.length
@@ -34,7 +33,16 @@ class Memory():
 
         pass
 
+    def create(self, state_shape, action_shape):
+        self.memory_state = torch.empty([self.capacity] + list(state_shape), device='cpu', requires_grad=False)
+        self.memory_action = torch.empty([self.capacity] + list(action_shape), device='cpu', requires_grad=False)
+        self.memory_reward = torch.empty([self.capacity, 1], device='cpu', requires_grad=False)
+        self.memory_next_state = torch.empty([self.capacity] + list(state_shape), device='cpu', requires_grad=False)
+        self.memory_done = torch.empty([self.capacity, 1], device='cpu', requires_grad=False)
+
     def get(self, index):
+        if self.length == 0:
+            raise ValueError('Memory buffer empty')
         state = self.memory_state[index, :]
         action = self.memory_action[index, :]
         reward = self.memory_reward[index, :]
@@ -43,7 +51,7 @@ class Memory():
         return state, action, reward, next_state, done
 
     def sample(self, batch_size):
-        index = torch.randint(0, self.length, (batch_size,))
+        index = torch.randint(0, len(self), (batch_size,))
         state, action, reward, next_state, done = self.get(index)
         return state, action, reward, next_state, done
 
@@ -51,17 +59,21 @@ class Memory():
         return self.length
 
     def add(self, state, action, reward, next_state, done):
+        if self.length == 0:
+            self.create(state.shape[1:], action.shape[1:])
         index = self.position
-        self.memory_state[index, :] = torch.tensor(state, dtype=torch.float32)
-        self.memory_action[index, :] = torch.tensor(action, dtype=torch.float32)
-        self.memory_reward[index, :] = torch.tensor(reward, dtype=torch.float32)
-        self.memory_next_state[index, :] = torch.tensor(next_state, dtype=torch.float32)
-        self.memory_done[index, :] = torch.tensor(done, dtype=torch.float32)
+        self.memory_state[index, :] = state
+        self.memory_action[index, :] = action
+        self.memory_reward[index, :] = reward
+        self.memory_next_state[index, :] = next_state
+        self.memory_done[index, :] = done
         self.position = (self.position + 1) % self.capacity
         self.length = min(self.capacity, self.length + 1)
         pass
 
     def save(self):
+        if self.length == 0:
+            raise ValueError('Memory buffer empty')
         index = range(self.length)
         state, action, reward, next_state, done = self.get(index)
         torch.save({'state': state, 'action': action, 'reward': reward, 'next_state': next_state, 'done': done, 'length': self.length, 'position': self.position}, self.filename)

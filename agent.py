@@ -1,4 +1,4 @@
-import numpy as np
+import numpy
 from pathlib import Path
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -13,8 +13,6 @@ class Agent():
 
     def __init__(self,
                  name,
-                 num_of_actions,
-                 num_of_states,
                  num_of_latent_states,
                  num_of_random_states,
                  preprocess_fwd_net,
@@ -22,12 +20,14 @@ class Agent():
                  value_net,
                  policy_net,
                  tensor_board,
+                 state_input_transform,
+                 reward_input_transform,
+                 action_input_transform,
+                 action_output_transform,
                  **params
                  ):
 
         self.name = str(name)
-        self.num_of_actions = num_of_actions
-        self.num_of_states = num_of_states
         self.num_of_latent_states = num_of_latent_states
         self.num_of_random_states = num_of_random_states
         self.preprocess_fwd_net_structure = preprocess_fwd_net
@@ -35,6 +35,10 @@ class Agent():
         self.value_net_structure = value_net
         self.policy_net_structure = policy_net
         self.tensor_board = tensor_board
+        self.state_input_transform = state_input_transform
+        self.reward_input_transform = reward_input_transform
+        self.action_input_transform = action_input_transform
+        self.action_output_transform = action_output_transform
 
         # Error if any of these variables do not exist in params
         assert 'batches' in params, '"batches" variable required'
@@ -82,11 +86,10 @@ class Agent():
         self.preprocess_net_action_copy = copy.deepcopy(self.preprocess_net).to(self.act_device)
         self.policy_net_action_copy = copy.deepcopy(self.policy_net).to(self.act_device)
 
-        self.memory = Memory(self.memory_buffer_size, self.memory_buffer_filename, self.num_of_states, self.num_of_actions)
+        self.memory = Memory(self.memory_buffer_size, self.memory_buffer_filename)
 
         self.batch_count = 1
         self.record_count = 1
-        self.action_count = 1
         self.cumulative_reward = 0
 
         pass
@@ -95,8 +98,7 @@ class Agent():
 
     def act(self, in_state):
 
-        state = np.array(in_state, ndmin=2)
-        state = torch.from_numpy(state).float().detach().to(self.act_device)
+        state = self.state_input_transform(in_state).detach().to(self.act_device)
 
         self.preprocess_net_action_copy.eval()
         self.policy_net_action_copy.eval()
@@ -105,35 +107,17 @@ class Agent():
             state_mu, state_logvar = self.preprocess_net_action_copy.encode(state)
             action = self.policy_net_action_copy(state_mu)
 
-        out_action = action[0].cpu().numpy()
-
-        self.action_count += 1
+        out_action = self.action_output_transform(action[0].cpu())
 
         return out_action
 
     def record(self, in_state, in_action, in_reward, in_next_state, in_done):
 
-        # Log experience
-        if self.verbosity:
-            for n in range(self.num_of_states):
-                self.tensor_board.add_scalar('Record/state' + str(n), in_state[n], self.record_count)
-                self.tensor_board.add_scalar('Record/next_state' + str(n), in_next_state[n], self.record_count)
-            for n in range(self.num_of_actions):
-                self.tensor_board.add_scalar('Record/action' + str(n), in_action[n], self.record_count)
-            self.tensor_board.add_scalar('Record/reward', in_reward, self.record_count)
-            self.tensor_board.add_scalar('Record/in_done', in_done, self.record_count)
-
-        self.cumulative_reward += in_reward
-        if in_done:
-            self.tensor_board.add_scalar('Record/cumulative_reward', self.cumulative_reward, self.record_count)
-            self.cumulative_reward = 0
-
-        # Save memory
-        state = np.array(in_state, ndmin=2)
-        action = np.array(in_action, ndmin=2)
-        reward = np.array(in_reward, ndmin=2)
-        next_state = np.array(in_next_state, ndmin=2)
-        done = np.array(in_done, ndmin=2)
+        state = self.state_input_transform(in_state).detach().cpu()
+        action = self.action_input_transform(in_action).detach().cpu()
+        reward = self.reward_input_transform(in_reward).detach().cpu()
+        next_state = self.state_input_transform(in_next_state).detach().cpu()
+        done = torch.FloatTensor([[float(in_done)]]).detach().cpu()
         self.memory.add(state, action, reward, next_state, done)
 
         self.record_count += 1
@@ -161,8 +145,8 @@ class Agent():
 
         for batch_num in range(1, self.batches + 1):
 
-            batch_LL = (batch_num - 1) * self.batches
-            batch_UL = batch_num * self.batches
+            batch_LL = (batch_num - 1) * self.batch_size
+            batch_UL = batch_num * self.batch_size
             state = state_all_batches[batch_LL:batch_UL, :]
             action = action_all_batches[batch_LL:batch_UL, :]
             reward = reward_all_batches[batch_LL:batch_UL, :]
@@ -183,7 +167,8 @@ class Agent():
                 return loss_mean
 
             self.preprocess_optimizer.zero_grad()
-            preprocess_reconstruction_loss = norm_mse_loss(state_reconstructed, state)
+            #preprocess_reconstruction_loss = norm_mse_loss(state_reconstructed, state)
+            preprocess_reconstruction_loss = torch.nn.functional.mse_loss(state_reconstructed, state)
             preprocess_latent_loss = -0.5 * torch.mean(1 + state_logvar - state_mu.pow(2) - state_logvar.exp())
             preprocess_latent_learn_factor = self.preprocess_latent_learn_factor(self.preprocess_scheduler._step_count)
             preprocess_latent_loss.register_hook(lambda grad: grad * preprocess_latent_learn_factor)
