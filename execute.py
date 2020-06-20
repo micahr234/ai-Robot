@@ -1,6 +1,7 @@
 import cProfile
 import os
 import time
+import copy
 import numpy as np
 from pathlib import Path
 from collections import deque
@@ -24,6 +25,8 @@ def Execute(**params):
     assert 'environment_name' in params, '"environment_name" variable required'
     environment_name = params['environment_name']
     log_params['environment_name'] = environment_name
+    assert 'environment' in params, '"environment" variable required'
+    environment = params['environment']
     assert 'previous_states' in params, '"previous_states" variable required'
     previous_states = params['previous_states']
     log_params['previous_states'] = previous_states
@@ -57,6 +60,8 @@ def Execute(**params):
     reward_input_transform = params['reward_input_transform']
     assert 'action_input_transform' in params, '"action_input_transform" variable required'
     action_input_transform = params['action_input_transform']
+    assert 'done_input_transform' in params, '"done_input_transform" variable required'
+    done_input_transform = params['done_input_transform']
     assert 'action_output_transform' in params, '"action_output_transform" variable required'
     action_output_transform = params['action_output_transform']
 
@@ -92,8 +97,6 @@ def Execute(**params):
     log_params['policy_value_learn_rate'] = policy_value_learn_rate
     policy_entropy_learn_factor = params['policy_entropy_learn_factor'] if 'policy_entropy_learn_factor' in params else lambda batch: 0.0001
     log_params['policy_entropy_learn_factor'] = policy_entropy_learn_factor
-    policy_delay = params['policy_delay'] if 'policy_delay' in params else 10
-    log_params['policy_delay'] = policy_delay
     value_learn_rate = params['value_learn_rate'] if 'value_learn_rate' in params else lambda batch: 0.0001
     log_params['value_learn_rate'] = value_learn_rate
     value_next_learn_factor = params['value_next_learn_factor'] if 'value_next_learn_factor' in params else lambda batch: 0.8
@@ -112,23 +115,12 @@ def Execute(**params):
     tensor_board.add_text('Hyper Params', str(log_params), 0)
     print('')
 
-    print('Building environment: ' + environment_name)
-    if environment_name == 'CartPoleBulletEnv-v1':
-        env = gym.make(environment_name, renders=render, discrete_actions=False)
-    elif environment_name == 'HopperBulletEnv-v0':
-        env = gym.make(environment_name, render=render)
-    elif environment_name == 'Unity':
-        unity_env = UnityEnvironment(None, seed=1, side_channels=[])
-        env = UnityToGymWrapper(unity_env, False, False, False, False)
-    elif environment_name == 'UnityVisual':
-        unity_env = UnityEnvironment(None, seed=1, side_channels=[])
-        env = UnityToGymWrapper(unity_env, True, False, False, True)
-    elif environment_name == 'CubeChase':
-        unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', seed=1, side_channels=[])
-        env = UnityToGymWrapper(unity_env, False, False, False, False)
-    else:
-        env = gym.make(environment_name)
-    print('')
+    #if environment_name == 'CartPoleBulletEnv-v1':
+    #    env = gym.make(environment_name, renders=render, discrete_actions=False)
+    #elif environment_name == 'HopperBulletEnv-v0':
+    #    env = gym.make(environment_name, render=render)
+    #else:
+    #    env = gym.make(environment_name)
 
     print('Creating agent: ' + agent_name)
     if agent_name == 'agent':
@@ -148,7 +140,6 @@ def Execute(**params):
             preprocess_latent_learn_factor=preprocess_latent_learn_factor,
             policy_value_learn_rate=policy_value_learn_rate,
             policy_entropy_learn_factor=policy_entropy_learn_factor,
-            policy_delay=policy_delay,
             value_learn_rate=value_learn_rate,
             value_next_learn_factor=value_next_learn_factor,
             discount=discount,
@@ -156,6 +147,7 @@ def Execute(**params):
             state_input_transform=state_input_transform,
             reward_input_transform=reward_input_transform,
             action_input_transform=action_input_transform,
+            done_input_transform=done_input_transform,
             action_output_transform=action_output_transform
         )
     else:
@@ -179,8 +171,8 @@ def Execute(**params):
 
     def Loop():
 
-        action_space_min = np.array(env.action_space.low)
-        action_space_max = np.array(env.action_space.high)
+        action_space_min = np.array(environment.action_space.low)
+        action_space_max = np.array(environment.action_space.high)
 
         done = True
         learnstep = 1
@@ -193,29 +185,33 @@ def Execute(**params):
             if done:
                 episode_timestep = 1
                 episode_cumulative_reward = 0
-                next_state_partial = env.reset()
+                next_state_partial = environment.reset()
                 next_state = np.concatenate((next_state_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_state_partial
                 next_state_buffer.clear()
                 for i in range(0, previous_states):
                     next_state_buffer.append(next_state)
 
-                if render: env.render()
+                if render: environment.render()
                 if render: time.sleep(render_delay)
 
             state = next_state
-            state_buffer = next_state_buffer
+            state_buffer = copy.deepcopy(next_state_buffer)
 
             action = agent.act(state_buffer)
+            #action = agent.act(state_buffer[-1])
+            #action = agent.act(state)
             scaled_action = (np.array(action) / 2 + 0.5) * (action_space_max - action_space_min) + action_space_min
-            next_state_partial, reward, done, info = env.step(scaled_action)
+            next_state_partial, reward, done, info = environment.step(scaled_action)
             next_state = np.concatenate((next_state_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_state_partial
             next_state_buffer.append(next_state)
             agent.record(state_buffer, action, reward, next_state_buffer, done)
+            #agent.record(state_buffer[-1], action, reward, next_state_buffer[-1], done)
+            #agent.record(state, action, reward, next_state, done)
 
             episode_cumulative_reward += reward
             Record(tensor_board, timestep, state, action, reward, done, episode_timestep, episode_cumulative_reward)
 
-            if render: env.render()
+            if render: environment.render()
             if render: time.sleep(render_delay)
 
             if (timestep / learn_interval) >= learnstep:
@@ -228,7 +224,7 @@ def Execute(**params):
 
         if save:
             agent.save()
-        env.close()
+        environment.close()
 
     print('Running...')
 

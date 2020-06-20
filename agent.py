@@ -23,6 +23,7 @@ class Agent():
                  state_input_transform,
                  reward_input_transform,
                  action_input_transform,
+                 done_input_transform,
                  action_output_transform,
                  **params
                  ):
@@ -38,6 +39,7 @@ class Agent():
         self.state_input_transform = state_input_transform
         self.reward_input_transform = reward_input_transform
         self.action_input_transform = action_input_transform
+        self.done_input_transform = done_input_transform
         self.action_output_transform = action_output_transform
 
         # Error if any of these variables do not exist in params
@@ -58,8 +60,6 @@ class Agent():
         self.policy_value_learn_rate = params['policy_value_learn_rate']
         assert 'policy_entropy_learn_factor' in params, '"policy_entropy_learn_factor" variable required'
         self.policy_entropy_learn_factor = params['policy_entropy_learn_factor']
-        assert 'policy_delay' in params, '"policy_delay" variable required'
-        self.policy_delay = params['policy_delay']
         assert 'value_learn_rate' in params, '"value_learn_rate" variable required'
         self.value_learn_rate = params['value_learn_rate']
         assert 'value_next_learn_factor' in params, '"value_next_learn_factor" variable required'
@@ -104,7 +104,7 @@ class Agent():
         self.policy_net_action_copy.eval()
 
         with torch.no_grad():
-            state_mu, state_logvar = self.preprocess_net_action_copy.encode(state)
+            state_mu = self.preprocess_net_action_copy(state)
             action = self.policy_net_action_copy(state_mu)
 
         out_action = self.action_output_transform(action[0].cpu())
@@ -117,7 +117,7 @@ class Agent():
         action = self.action_input_transform(in_action).detach().cpu()
         reward = self.reward_input_transform(in_reward).detach().cpu()
         next_state = self.state_input_transform(in_next_state).detach().cpu()
-        done = torch.FloatTensor([[float(in_done)]]).detach().cpu()
+        done = self.done_input_transform(in_done).detach().cpu()
         self.memory.add(state, action, reward, next_state, done)
 
         self.record_count += 1
@@ -136,83 +136,87 @@ class Agent():
         self.value_net.train()
         self.policy_net.train()
 
-        state_all_batches, action_all_batches, reward_all_batches, next_state_all_batches, done_all_batches = self.memory.sample(self.batch_size * self.batches)
-        state_all_batches = state_all_batches.to(self.train_device, non_blocking=True)
-        action_all_batches = action_all_batches.to(self.train_device, non_blocking=True)
-        reward_all_batches = reward_all_batches.to(self.train_device, non_blocking=True)
-        next_state_all_batches = next_state_all_batches.to(self.train_device, non_blocking=True)
-        done_all_batches = done_all_batches.to(self.train_device, non_blocking=True)
-
         for batch_num in range(1, self.batches + 1):
 
-            batch_LL = (batch_num - 1) * self.batch_size
-            batch_UL = batch_num * self.batch_size
-            state = state_all_batches[batch_LL:batch_UL, :]
-            action = action_all_batches[batch_LL:batch_UL, :]
-            reward = reward_all_batches[batch_LL:batch_UL, :]
-            next_state = next_state_all_batches[batch_LL:batch_UL, :]
-            done = done_all_batches[batch_LL:batch_UL, :]
+            # get data for batch
+            state, action, reward, next_state, done = self.memory.sample(self.batch_size)
+            state = state.to(self.train_device, non_blocking=True)
+            action = action.to(self.train_device, non_blocking=True)
+            reward = reward.to(self.train_device, non_blocking=True)
+            next_state = next_state.to(self.train_device, non_blocking=True)
+            done = done.to(self.train_device, non_blocking=True)
 
-            # preprocessor forward pass
-            state_reconstructed, state_mu, state_logvar = self.preprocess_net(state)
-
-            # optimize preprocessor
-            def norm_mse_loss(input, target):
-                target = target.detach()
-                target_std, target_mean = torch.std_mean(target, dim=0)
-                target_std = target_std + 1e-6
-                target_normalized = (target - target_mean) / target_std
-                loss = (target_normalized - input) ** 2
-                loss_mean = torch.mean(loss)
-                return loss_mean
-
-            self.preprocess_optimizer.zero_grad()
-            #preprocess_reconstruction_loss = norm_mse_loss(state_reconstructed, state)
-            preprocess_reconstruction_loss = torch.nn.functional.mse_loss(state_reconstructed, state)
-            preprocess_latent_loss = -0.5 * torch.mean(1 + state_logvar - state_mu.pow(2) - state_logvar.exp())
-            preprocess_latent_learn_factor = self.preprocess_latent_learn_factor(self.preprocess_scheduler._step_count)
-            preprocess_latent_loss.register_hook(lambda grad: grad * preprocess_latent_learn_factor)
-            preprocess_loss = preprocess_reconstruction_loss + preprocess_latent_loss
-            preprocess_loss.backward()
-            self.preprocess_optimizer.step()
+            # get preprocess learn rates
             self.preprocess_scheduler.step()
-
-            # log preprocessor results
-            self.tensor_board.add_scalar('Learn_Preprocess/reconstruction_loss', preprocess_reconstruction_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('Learn_Preprocess/reconstruction_learn_rate', self.preprocess_scheduler.get_last_lr()[0], self.batch_count)
-            self.tensor_board.add_scalar('Learn_Preprocess/latent_loss', preprocess_latent_loss.item(), self.batch_count)
+            preprocess_learn_rate = self.preprocess_scheduler.get_last_lr()[0]
+            preprocess_latent_learn_factor = self.preprocess_latent_learn_factor(self.preprocess_scheduler.last_epoch)
+            self.tensor_board.add_scalar('Learn_Preprocess/learn_rate', preprocess_learn_rate, self.batch_count)
             self.tensor_board.add_scalar('Learn_Preprocess/latent_learn_factor', preprocess_latent_learn_factor, self.batch_count)
 
-            # value forward pass
-            state_preprocessed, _ = self.preprocess_net.encode(state)
-            next_state_preprocessed, _ = self.preprocess_net.encode(next_state)
-            values = self.value_net(state_preprocessed, action)
-            actions_next = self.policy_net(next_state_preprocessed)
-            values_next = self.value_net(next_state_preprocessed, actions_next)
-            discount = self.discount(self.value_scheduler._step_count)
-            values_diff = values - values_next * discount * (1.0 - done)
-            value_avg = torch.mean(values).detach()
+            # learn preprocess
+            if preprocess_learn_rate > 0.0:
 
-            # optimize value
-            self.value_optimizer.zero_grad()
-            value_next_learn_factor = self.value_next_learn_factor(self.value_scheduler._step_count)
-            values_next.register_hook(lambda grad: grad * value_next_learn_factor)
-            value_loss = torch.nn.functional.mse_loss(values_diff, reward)
-            value_loss.backward()
-            self.value_optimizer.step()
+                # preprocessor forward pass
+                state_last_frame = state[:, -1, :]
+                state_reconstructed, state_mu, state_logvar = self.preprocess_net.loop(state_last_frame)
+
+                self.preprocess_optimizer.zero_grad()
+                preprocess_reconstruction_loss = torch.nn.functional.mse_loss(state_reconstructed, state_last_frame)
+                preprocess_latent_loss = -0.5 * torch.mean(1 + state_logvar - state_mu.pow(2) - state_logvar.exp())
+                preprocess_latent_loss.register_hook(lambda grad: grad * preprocess_latent_learn_factor)
+                preprocess_loss = preprocess_reconstruction_loss + preprocess_latent_loss
+                preprocess_loss.backward()
+                self.preprocess_optimizer.step()
+
+                # log preprocessor results
+                self.tensor_board.add_scalar('Learn_Preprocess/reconstruction_loss', preprocess_reconstruction_loss.item(), self.batch_count)
+                self.tensor_board.add_scalar('Learn_Preprocess/latent_loss', preprocess_latent_loss.item(), self.batch_count)
+
+            # get value learn rates
             self.value_scheduler.step()
-
-            # log value results
-            self.tensor_board.add_scalar('Learn_Value/avg', value_avg.item(), self.batch_count)
-            self.tensor_board.add_scalar('Learn_Value/loss', value_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('Learn_Value/learn_rate', self.value_scheduler.get_last_lr()[0], self.batch_count)
+            value_learn_rate = self.value_scheduler.get_last_lr()[0]
+            value_next_learn_factor = self.value_next_learn_factor(self.value_scheduler.last_epoch)
+            discount = self.discount(self.value_scheduler.last_epoch)
+            self.tensor_board.add_scalar('Learn_Value/learn_rate', value_learn_rate, self.batch_count)
             self.tensor_board.add_scalar('Learn_Value/next_learn_factor', value_next_learn_factor, self.batch_count)
             self.tensor_board.add_scalar('Learn_Value/discount', discount, self.batch_count)
 
-            if self.batch_count % self.policy_delay == 0:
+            # learn value
+            if value_learn_rate > 0.0:
+
+                # value forward pass
+                state_preprocessed = self.preprocess_net(state)
+                next_state_preprocessed = self.preprocess_net(next_state)
+                values = self.value_net(state_preprocessed, action)
+                actions_next = self.policy_net(next_state_preprocessed)
+                values_next = self.value_net(next_state_preprocessed, actions_next)
+                values_diff = values - values_next * discount * (1.0 - done)
+                value_avg = torch.mean(values).detach()
+
+                # optimize value
+                self.value_optimizer.zero_grad()
+                values_next.register_hook(lambda grad: grad * value_next_learn_factor)
+                value_loss = torch.nn.functional.mse_loss(values_diff, reward)
+                value_loss.backward()
+                self.value_optimizer.step()
+
+                # log value results
+                self.tensor_board.add_scalar('Learn_Value/avg', value_avg.item(), self.batch_count)
+                self.tensor_board.add_scalar('Learn_Value/loss', value_loss.item(), self.batch_count)
+
+            # get policy learn rates
+            self.policy_scheduler.step()
+            policy_learn_rate = self.policy_scheduler.get_last_lr()[0]
+            policy_entropy_learn_factor = self.policy_entropy_learn_factor(self.policy_scheduler.last_epoch)
+            self.tensor_board.add_scalar('Learn_Policy/learn_rate', policy_learn_rate, self.batch_count)
+            self.tensor_board.add_scalar('Learn_Policy/entropy_learn_factor', policy_entropy_learn_factor, self.batch_count)
+
+            # learn policy
+            if policy_learn_rate > 0.0:
+
                 # policy forward pass
                 with torch.no_grad():
-                    state_preprocessed, _ = self.preprocess_net.encode(state)
+                    state_preprocessed = self.preprocess_net(state)
                 actions_current = self.policy_net(state_preprocessed)
                 values = self.value_net(state_preprocessed, actions_current)
 
@@ -220,18 +224,14 @@ class Agent():
                 self.policy_optimizer.zero_grad()
                 policy_value_loss = -torch.mean(values)
                 policy_entropy_loss = -0.5 * torch.mean(torch.log(torch.var(actions_current, dim=0)))
-                policy_entropy_learn_factor = self.policy_entropy_learn_factor(self.policy_scheduler._step_count)
                 policy_entropy_loss.register_hook(lambda grad: grad * policy_entropy_learn_factor)
                 policy_loss_total = policy_value_loss + policy_entropy_loss
                 policy_loss_total.backward()
                 self.policy_optimizer.step()
-                self.policy_scheduler.step()
 
                 # log policy results
                 self.tensor_board.add_scalar('Learn_Policy/value_loss', policy_value_loss.item(), self.batch_count)
-                self.tensor_board.add_scalar('Learn_Policy/value_learn_rate', self.policy_scheduler.get_last_lr()[0], self.batch_count)
                 self.tensor_board.add_scalar('Learn_Policy/entropy_loss', policy_entropy_loss.item(), self.batch_count)
-                self.tensor_board.add_scalar('Learn_Policy/entropy_learn_factor', policy_entropy_learn_factor, self.batch_count)
 
             self.batch_count += 1
 
@@ -282,11 +282,18 @@ class Agent():
                 r = self.rev_net(z)
                 return r
 
-            def forward(self, state_input):
+            def loop(self, state_input):
                 mu, logvar = self.encode(state_input)
                 z = self.reparameterize(mu, logvar)
                 r = self.decode(z)
                 return r, mu, logvar
+
+            def forward(self, multi_state_input):
+                multi_mu = torch.empty(list(multi_state_input.shape[0:2]) + [self.num_of_latent_states], device=multi_state_input.device)
+                for i in range(multi_state_input.shape[1]):
+                    multi_mu[:, i, :], _ = self.encode(multi_state_input[:, i, :])
+                flat_mu = torch.flatten(multi_mu, start_dim=1, end_dim=2)
+                return flat_mu
 
         self.preprocess_net = Net(self.preprocess_fwd_net_structure, self.preprocess_rev_net_structure, self.num_of_latent_states).to(self.train_device)
 
@@ -300,7 +307,7 @@ class Agent():
             print('No preprocess network loaded from file')
 
         self.preprocess_optimizer = torch.optim.Adam(self.preprocess_net.parameters(), lr=1.0)
-        self.preprocess_scheduler = torch.optim.lr_scheduler.LambdaLR(self.preprocess_optimizer, self.preprocess_learn_rate)
+        self.preprocess_scheduler = torch.optim.lr_scheduler.LambdaLR(self.preprocess_optimizer, self.preprocess_learn_rate, last_epoch=-1)
 
         pass
 
@@ -318,7 +325,8 @@ class Agent():
                 noise_shape = list(state_input.shape[0:-1]) + [self.num_of_random_states]
                 c = torch.cat((state_input, torch.randn(noise_shape, device=state_input.device)), dim=-1)
                 x = self.net(c)
-                o = torch.tanh(x)
+                #o = torch.tanh(x)
+                o = torch.clamp(x, -1.0, 1.0)
                 return o
 
         self.policy_net = Net(self.policy_net_structure, self.num_of_random_states).to(self.train_device)
@@ -333,7 +341,7 @@ class Agent():
             print('No max policy network loaded from file')
 
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=1.0)
-        self.policy_scheduler = torch.optim.lr_scheduler.LambdaLR(self.policy_optimizer, self.policy_value_learn_rate)
+        self.policy_scheduler = torch.optim.lr_scheduler.LambdaLR(self.policy_optimizer, self.policy_value_learn_rate, last_epoch=-1)
 
         pass
 
@@ -364,6 +372,6 @@ class Agent():
 
         self.value_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=1.0)
         self.value_optimizer.add_param_group({'params': self.preprocess_net.fwd_net.parameters()})
-        self.value_scheduler = torch.optim.lr_scheduler.LambdaLR(self.value_optimizer, self.value_learn_rate)
+        self.value_scheduler = torch.optim.lr_scheduler.LambdaLR(self.value_optimizer, self.value_learn_rate, last_epoch=-1)
 
         pass

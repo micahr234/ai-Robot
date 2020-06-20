@@ -1,33 +1,36 @@
 import torch
 import math
+from mlagents_envs.environment import UnityEnvironment
+from gym_unity.envs import UnityToGymWrapper
 from execute import Execute
 
-action_shape = [2]
-state_shape = [9]
-num_of_latent_states = 9
+num_of_states = 6
+previous_states = 3
+num_of_actions = 2
+num_of_latent_states = 6
 num_of_random_states = num_of_latent_states
 
 preprocess_fwd_net = torch.nn.Sequential(
-    torch.nn.Linear(state_shape[0], 32),
+    torch.nn.Linear(num_of_states, 32),
     torch.nn.ReLU(),
     torch.nn.Linear(32, num_of_latent_states * 2)
 )
 preprocess_rev_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states, 32),
     torch.nn.ReLU(),
-    torch.nn.Linear(32, state_shape[0])
+    torch.nn.Linear(32, num_of_states)
 )
 policy_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states + num_of_random_states, 512),
+    torch.nn.Linear(num_of_latent_states * previous_states + num_of_random_states, 512),
     torch.nn.ReLU(),
     torch.nn.Linear(512, 256),
     torch.nn.ReLU(),
     torch.nn.Linear(256, 128),
     torch.nn.ReLU(),
-    torch.nn.Linear(128, action_shape[0])
+    torch.nn.Linear(128, num_of_actions)
 )
 value_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states + action_shape[0], 512),
+    torch.nn.Linear(num_of_latent_states * previous_states + num_of_actions, 512),
     torch.nn.ReLU(),
     torch.nn.Linear(512, 256),
     torch.nn.ReLU(),
@@ -36,25 +39,41 @@ value_net = torch.nn.Sequential(
     torch.nn.Linear(128, 1)
 )
 
+def scale(tensor, input_min, input_max):
+    slope = (input_max - input_min) * 0.5
+    intercept = (input_max + input_min) * 0.5
+    scaled_tensor = (tensor - intercept) / slope
+    return scaled_tensor
+
 def state_input_transform(state):
-    xform_state = torch.FloatTensor([state]).contiguous()
+    xform_state = torch.Tensor([state]).contiguous()
+    #xform_state = scale(xform_state, -1.0, 1.0)
     return xform_state
 
 def reward_input_transform(reward):
-    xform_reward = torch.FloatTensor([[reward]]).contiguous()
+    xform_reward = torch.Tensor([[reward]]).contiguous()
     return xform_reward
 
 def action_input_transform(action):
-    xform_action = torch.FloatTensor(action).contiguous()
+    xform_action = torch.Tensor(action).contiguous()
     return xform_action
+
+def done_input_transform(done):
+    xform_reward = torch.Tensor([[float(done)]]).contiguous()
+    return xform_reward
 
 def action_output_transform(action):
     xform_action = [action.tolist()]
     return xform_action
 
+unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', base_port=2006, seed=1, no_graphics=False, side_channels=[])
+gym_env = UnityToGymWrapper(unity_env, False, False, False, False)
+
 Execute(
     instance_name='CubeChase1',
     environment_name='CubeChase',
+    environment=gym_env,
+    previous_states=previous_states,
     agent_name='agent',
     profile=False,
     render=False,
@@ -64,22 +83,19 @@ Execute(
     max_timestep=20000,
     learn_interval=200,
     save=False,
-    episode_timestamp=True,
+    episode_timestamp=False,
     batches=200,
-    batch_size=200,
+    batch_size=2000,
     memory_buffer_size=20000,
 
-    preprocess_learn_rate=lambda batch: 0.001,
-    preprocess_latent_learn_factor=lambda batch: 1.0,#0.9998**batch
-    policy_value_learn_rate=lambda batch: 0.001,
-    policy_entropy_learn_factor=lambda batch: 0.01 * (math.cos(2 * math.pi * (batch * 10) / 3000) + 1.0) / 2 * 0.9998 ** (batch * 10),
-    policy_delay=10,
-    value_learn_rate=lambda batch: 0.001,
+    preprocess_learn_rate=lambda batch: 0.0001,
+    preprocess_latent_learn_factor=lambda batch: 1.0,
+    policy_value_learn_rate=lambda batch: 0.0001 * (batch % 10 == 0.0),
+    policy_entropy_learn_factor=lambda batch: 0.01, #0.01 * (math.cos(2 * math.pi * (batch * 10) / 3000) + 1.0) / 2 * 0.9998 ** (batch * 10),
+    value_learn_rate=lambda batch: 0.0001,
     value_next_learn_factor=lambda batch: 0.8,
-    discount=lambda batch: (1 - 0.9998**batch) * 0.1 + 0.9,
+    discount=lambda batch: 0.99, #(1 - 0.9998**batch) * 0.1 + 0.9,
 
-    action_shape=action_shape,
-    state_shape=state_shape,
     num_of_latent_states=num_of_latent_states,
     num_of_random_states=num_of_random_states,
 
@@ -91,5 +107,6 @@ Execute(
     state_input_transform=state_input_transform,
     reward_input_transform=reward_input_transform,
     action_input_transform=action_input_transform,
+    done_input_transform=done_input_transform,
     action_output_transform=action_output_transform
 )
