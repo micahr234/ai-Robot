@@ -8,28 +8,65 @@ num_of_states = 6
 previous_states = 3
 num_of_actions = 2
 num_of_latent_states = 6
-num_of_random_states = num_of_latent_states
 
-preprocess_fwd_net = torch.nn.Sequential(
+latent_fwd_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_states, 32),
     torch.nn.ReLU(),
     torch.nn.Linear(32, num_of_latent_states * 2)
 )
-preprocess_rev_net = torch.nn.Sequential(
+latent_rev_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states, 32),
     torch.nn.ReLU(),
     torch.nn.Linear(32, num_of_states)
 )
 policy_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * previous_states + num_of_random_states, 512),
+    torch.nn.Linear(num_of_latent_states * previous_states, 512),
     torch.nn.ReLU(),
     torch.nn.Linear(512, 256),
     torch.nn.ReLU(),
     torch.nn.Linear(256, 128),
     torch.nn.ReLU(),
-    torch.nn.Linear(128, num_of_actions)
+    torch.nn.Linear(128, num_of_actions),
+    torch.nn.Tanh()
 )
 value_net = torch.nn.Sequential(
+    torch.nn.Linear(num_of_latent_states * previous_states + num_of_actions, 512),
+    torch.nn.ReLU(),
+    torch.nn.Linear(512, 256),
+    torch.nn.ReLU(),
+    torch.nn.Linear(256, 128),
+    torch.nn.ReLU(),
+    torch.nn.Linear(128, 1)
+)
+model_net = torch.nn.Sequential(
+    torch.nn.Linear(num_of_latent_states * previous_states + num_of_actions, 512),
+    torch.nn.ReLU(),
+    torch.nn.Linear(512, 256),
+    torch.nn.ReLU(),
+    torch.nn.Linear(256, 128),
+    torch.nn.ReLU(),
+    torch.nn.Linear(128, num_of_latent_states)
+)
+reward_net = torch.nn.Sequential(
+    torch.nn.Linear(num_of_latent_states * previous_states + num_of_actions, 512),
+    torch.nn.ReLU(),
+    torch.nn.Linear(512, 256),
+    torch.nn.ReLU(),
+    torch.nn.Linear(256, 128),
+    torch.nn.ReLU(),
+    torch.nn.Linear(128, 1)
+)
+terminate_net = torch.nn.Sequential(
+    torch.nn.Linear(num_of_latent_states * previous_states + num_of_actions, 512),
+    torch.nn.ReLU(),
+    torch.nn.Linear(512, 256),
+    torch.nn.ReLU(),
+    torch.nn.Linear(256, 128),
+    torch.nn.ReLU(),
+    torch.nn.Linear(128, 1),
+    torch.nn.Sigmoid()
+)
+novelty_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * previous_states + num_of_actions, 512),
     torch.nn.ReLU(),
     torch.nn.Linear(512, 256),
@@ -58,7 +95,7 @@ def action_input_transform(action):
     xform_action = torch.Tensor(action).contiguous()
     return xform_action
 
-def done_input_transform(done):
+def terminate_input_transform(done):
     xform_reward = torch.Tensor([[float(done)]]).contiguous()
     return xform_reward
 
@@ -66,47 +103,51 @@ def action_output_transform(action):
     xform_action = [action.tolist()]
     return xform_action
 
-unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', base_port=2006, seed=1, no_graphics=False, side_channels=[])
+unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', base_port=2005, seed=1, no_graphics=False, side_channels=[])
 gym_env = UnityToGymWrapper(unity_env, False, False, False, False)
 
 Execute(
     instance_name='CubeChase1',
+
     environment_name='CubeChase',
     environment=gym_env,
-    previous_states=previous_states,
-    agent_name='agent',
-    profile=False,
-    render=False,
-    render_delay=0,
-    verbosity=False,
-
-    max_timestep=20000,
-    learn_interval=200,
-    save=False,
-    episode_timestamp=False,
-    batches=200,
-    batch_size=2000,
-    memory_buffer_size=20000,
-
-    preprocess_learn_rate=lambda batch: 0.0001,
-    preprocess_latent_learn_factor=lambda batch: 1.0,
-    policy_value_learn_rate=lambda batch: 0.0001 * (batch % 10 == 0.0),
-    policy_entropy_learn_factor=lambda batch: 0.01, #0.01 * (math.cos(2 * math.pi * (batch * 10) / 3000) + 1.0) / 2 * 0.9998 ** (batch * 10),
-    value_learn_rate=lambda batch: 0.0001,
-    value_next_learn_factor=lambda batch: 0.8,
-    discount=lambda batch: 0.99, #(1 - 0.9998**batch) * 0.1 + 0.9,
-
-    num_of_latent_states=num_of_latent_states,
-    num_of_random_states=num_of_random_states,
-
-    preprocess_fwd_net=preprocess_fwd_net,
-    preprocess_rev_net=preprocess_rev_net,
-    policy_net=policy_net,
-    value_net=value_net,
-
     state_input_transform=state_input_transform,
     reward_input_transform=reward_input_transform,
     action_input_transform=action_input_transform,
-    done_input_transform=done_input_transform,
-    action_output_transform=action_output_transform
+    terminate_input_transform=terminate_input_transform,
+    action_output_transform=action_output_transform,
+    episode_timestamp=False,
+    render=False,
+    render_delay=0.0,
+
+    agent_name='agent',
+    max_timestep=20000,
+    learn_interval=200,
+    batches=200,
+    batch_size=2000,
+    memory_buffer_size=20000,
+    save=False,
+
+    latent_fwd_net=latent_fwd_net,
+    latent_rev_net=latent_rev_net,
+    model_net=model_net,
+    reward_net=reward_net,
+    terminate_net=terminate_net,
+    value_net=value_net,
+    policy_net=policy_net,
+    previous_states=previous_states,
+    latent_states=num_of_latent_states,
+
+    latent_learn_rate=lambda batch: 0.001 * (batch < 10000),
+    latent_latent_learn_factor=lambda batch: 1.0,
+    model_learn_rate=lambda batch: 0.001,
+    reward_learn_rate=lambda batch: 0.001,
+    terminate_learn_rate=lambda batch: 0.001,
+    value_learn_rate=lambda batch: 0.001,
+    value_next_learn_factor=lambda batch: 0.8,
+    discount=lambda batch: 0.99,
+    policy_learn_rate=lambda batch: 0.001 * (batch % 10 == 0),
+
+    profile=False,
+    verbosity=False,
 )

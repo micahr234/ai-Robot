@@ -112,17 +112,17 @@ Execute(
 
     max_timestep=100000,
     learn_interval=200,
-    save=True,
+    save=False,
     episode_timestamp=False,
     batches=200,
     batch_size=2000,
     memory_buffer_size=20000,
 
     preprocess_learn_rate=lambda batch: 0.0001,
-    preprocess_latent_learn_factor=lambda batch: 1.0,
-    policy_value_learn_rate=lambda batch: 0.0001,
-    policy_entropy_learn_factor=lambda batch: 0.01, # 0.01 * (math.cos(2 * math.pi * (batch * 10) / 3000) + 1.0) / 2 * 0.9998 ** (batch * 10),
-    value_learn_rate=lambda batch: 0.0001,
+    preprocess_latent_learn_factor=lambda batch: 0.01,
+    policy_value_learn_rate=lambda batch: 0.001 * (batch % 10 == 0),
+    policy_entropy_learn_factor=lambda batch: 0.01, #0.01 * (math.cos(2 * math.pi * batch / 3000) + 1.0) / 2 * 0.9998 ** batch,
+    value_learn_rate=lambda batch: 0.001,
     value_next_learn_factor=lambda batch: 0.8,
     discount=lambda batch: 0.99,  # (1 - 0.9998**batch) * 0.1 + 0.9,
 
