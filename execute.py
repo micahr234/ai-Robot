@@ -6,16 +6,10 @@ import numpy as np
 from pathlib import Path
 from collections import deque
 
-import gym
-import pybullet
-import pybullet_envs
-import pybullet_data
-from mlagents_envs.environment import UnityEnvironment
-from gym_unity.envs import UnityToGymWrapper
-
 import torch
 
 from agent import Agent
+from agentB import AgentB
 
 def Execute(
             instance_name,
@@ -25,7 +19,7 @@ def Execute(
             state_input_transform,
             reward_input_transform,
             action_input_transform,
-            terminate_input_transform,
+            survive_input_transform,
             action_output_transform,
             episode_timestamp,
             render,
@@ -40,27 +34,25 @@ def Execute(
             save,
 
             latent_fwd_net,
-            latent_rev_net,
             model_net,
             reward_net,
-            terminate_net,
+            survive_net,
             value_net,
             policy_net,
-            previous_states,
+            state_frames,
             latent_states,
 
             latent_learn_rate,
-            latent_latent_learn_factor,
             model_learn_rate,
             reward_learn_rate,
-            terminate_learn_rate,
+            survive_learn_rate,
             value_learn_rate,
             value_next_learn_factor,
-            discount,
             policy_learn_rate,
+            policy_learn_noise_std,
 
             profile,
-            verbosity,
+            log_level
             ):
 
     print('')
@@ -70,37 +62,31 @@ def Execute(
     print('')
 
     print('Creating Tensor Board Log')
-    log_params = {}
-    log_params['environment_name'] = environment_name
-    log_params['previous_states'] = previous_states
-    log_params['agent_name'] = agent_name
-    log_params['latent_states'] = latent_states
-    log_params['latent_fwd_net'] = latent_fwd_net
-    log_params['latent_rev_net'] = latent_rev_net
-    log_params['value_net'] = value_net
-    log_params['policy_net'] = policy_net
-    log_params['model_net'] = policy_net
-    log_params['reward_net'] = reward_net
-    log_params['terminate_net'] = terminate_net
-    log_params['instance_name'] = instance_name
-    log_params['max_timestep'] = max_timestep
-    log_params['learn_interval'] = learn_interval
-    log_params['episode_timestamp'] = episode_timestamp
-    log_params['batches'] = batches
-    log_params['batch_size'] = batch_size
-    log_params['memory_buffer_size'] = memory_buffer_size
-    log_params['latent_learn_rate'] = latent_learn_rate
-    log_params['latent_latent_learn_factor'] = latent_latent_learn_factor
-    log_params['policy_learn_rate'] = policy_learn_rate
-    log_params['value_learn_rate'] = value_learn_rate
-    log_params['value_next_learn_factor'] = value_next_learn_factor
-    log_params['discount'] = discount
-    log_params['model_learn_rate'] = model_learn_rate
-    log_params['reward_learn_rate'] = reward_learn_rate
-    log_params['terminate_learn_rate'] = terminate_learn_rate
     tensor_board_dir = Path.cwd() / 'runs' / instance_name / str(time.time())
     tensor_board = torch.utils.tensorboard.SummaryWriter(tensor_board_dir, max_queue=10000, flush_secs=60)
-    tensor_board.add_text('Hyper Params', str(log_params), 0)
+    # log_level 0=None, 1=Hparams & Reward & Loss, 2=Everything in 2 & Learning Rates, 3=Everything in 2 & Distributions
+
+    if log_level >= 1:
+        log_params = {}
+        log_params['environment_name'] = environment_name
+        log_params['state_frames'] = state_frames
+        log_params['agent_name'] = agent_name
+        log_params['latent_states'] = latent_states
+        log_params['latent_fwd_net'] = latent_fwd_net
+        log_params['value_net'] = value_net
+        log_params['policy_net'] = policy_net
+        log_params['model_net'] = policy_net
+        log_params['reward_net'] = reward_net
+        log_params['survive_net'] = survive_net
+        log_params['instance_name'] = instance_name
+        log_params['max_timestep'] = max_timestep
+        log_params['learn_interval'] = learn_interval
+        log_params['episode_timestamp'] = episode_timestamp
+        log_params['batches'] = batches
+        log_params['batch_size'] = batch_size
+        log_params['memory_buffer_size'] = memory_buffer_size
+        tensor_board.add_text('Hyper Params', str(log_params), 0)
+
     print('')
 
     #if environment_name == 'CartPoleBulletEnv-v1':
@@ -112,75 +98,97 @@ def Execute(
 
     print('Creating agent: ' + agent_name)
     if agent_name == 'agent':
-        agent = Agent(
+        agent = AgentB(
             name=instance_name,
             latent_states=latent_states,
             latent_fwd_net=latent_fwd_net,
-            latent_rev_net=latent_rev_net,
             value_net=value_net,
             policy_net=policy_net,
             model_net=model_net,
             reward_net=reward_net,
-            terminate_net=terminate_net,
+            survive_net=survive_net,
             tensor_board=tensor_board,
             batch_size=batch_size,
             batches=batches,
             memory_buffer_size=memory_buffer_size,
             latent_learn_rate=latent_learn_rate,
-            latent_latent_learn_factor=latent_latent_learn_factor,
             policy_learn_rate=policy_learn_rate,
+            policy_learn_noise_std=policy_learn_noise_std,
             value_learn_rate=value_learn_rate,
             value_next_learn_factor=value_next_learn_factor,
-            discount=discount,
             model_learn_rate=model_learn_rate,
             reward_learn_rate=reward_learn_rate,
-            terminate_learn_rate=terminate_learn_rate,
-            verbosity=verbosity,
+            survive_learn_rate=survive_learn_rate,
+            log_level=log_level,
             state_input_transform=state_input_transform,
             reward_input_transform=reward_input_transform,
             action_input_transform=action_input_transform,
-            terminate_input_transform=terminate_input_transform,
+            survive_input_transform=survive_input_transform,
             action_output_transform=action_output_transform
         )
     else:
         raise ValueError('Agent name in not valid')
     print('')
-    
-    def Record(tensor_board, timestep, state, action, reward, done, episode_timestep, episode_cumulative_reward):
-        
-        #if verbosity:
-        #    for n in range(self.num_of_states):
-        #        self.tensor_board.add_scalar('Record/state' + str(n), in_state[n], timestep)
-        #        self.tensor_board.add_scalar('Record/next_state' + str(n), in_next_state[n], timestep)
-        #    for n in range(self.num_of_actions):
-        #        self.tensor_board.add_scalar('Record/action' + str(n), in_action[n], timestep)
-        #    self.tensor_board.add_scalar('Record/reward', in_reward, timestep)
-        #    self.tensor_board.add_scalar('Record/in_done', in_done, timestep)
-        
-        if done:
-            print('Episode finished\t\tEpisode timestep: ' + str(episode_timestep) + '\t\tCumulative reward: ' + str(episode_cumulative_reward))
-            tensor_board.add_scalar('Record/cumulative_reward', episode_cumulative_reward, timestep)
+
+
+    def log_reward(tensor_board, timestep, survive, episode_cumulative_reward):
+
+        if log_level >= 1:
+            if survive == 0.0:
+                tensor_board.add_scalar('record/cumulative_reward', episode_cumulative_reward, timestep)
+
+    log_observation_buffer = deque()
+    log_action_buffer = deque()
+    log_reward_buffer = deque()
+    log_survive_buffer = deque()
+
+    def log_values(tensor_board, timestep, observation, action, reward, survive, exe):
+
+        if log_level >= 3:
+
+            log_observation_buffer.append(observation)
+            log_action_buffer.append(action)
+            log_reward_buffer.append(reward)
+            log_survive_buffer.append(survive)
+
+            if exe:
+
+                log_observation_tensor = torch.Tensor(log_observation_buffer)
+                for n in range(log_observation_tensor.shape[1]):
+                    tensor_board.add_histogram('observation_param' + str(n), log_observation_tensor[:, n], timestep)
+                log_action_tensor = torch.Tensor(log_action_buffer)
+                for n in range(log_action_tensor.shape[1]):
+                    tensor_board.add_histogram('action_param' + str(n), log_action_tensor[:, n], timestep)
+                tensor_board.add_histogram('reward', torch.Tensor(log_reward_buffer), timestep)
+                tensor_board.add_histogram('survive', torch.Tensor(log_survive_buffer), timestep)
+
+                log_observation_buffer.clear()
+                log_action_buffer.clear()
+                log_reward_buffer.clear()
+                log_survive_buffer.clear()
 
     def Loop():
 
         action_space_min = np.array(environment.action_space.low)
         action_space_max = np.array(environment.action_space.high)
 
-        done = True
+        survive = 0.0
         learnstep = 1
 
-        observation_buffer = deque(maxlen=previous_states)
-        observation_next_buffer = deque(maxlen=previous_states)
+        observation_buffer = deque(maxlen=state_frames)
+        observation_next_buffer = deque(maxlen=state_frames)
 
         for timestep in range(1, max_timestep + 1):
 
-            if done:
+            learn = (timestep / learn_interval) >= learnstep
+
+            if survive == 0.0:
                 episode_timestep = 1
                 episode_cumulative_reward = 0
-                next_state_partial = environment.reset()
-                observation_next = np.concatenate((next_state_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_state_partial
+                next_observation_partial = environment.reset()
+                observation_next = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_observation_partial
                 observation_next_buffer.clear()
-                for i in range(0, previous_states):
+                for i in range(0, state_frames):
                     observation_next_buffer.append(observation_next)
 
                 if render: environment.render()
@@ -190,19 +198,27 @@ def Execute(
             observation_buffer = copy.deepcopy(observation_next_buffer)
 
             action = agent.act(observation_buffer)
+
+            if not np.any(-1.0 <= np.array(action) and np.array(action) <= 1.0):
+                raise ValueError('Action cannot be outside range -1 to 1')
+
             scaled_action = (np.array(action) / 2 + 0.5) * (action_space_max - action_space_min) + action_space_min
-            next_state_partial, reward, done, info = environment.step(scaled_action)
-            observation_next = np.concatenate((next_state_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_state_partial
+            next_observation_partial, reward, terminate, info = environment.step(scaled_action)
+            survive = 1.0 - terminate
+            observation_next = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_observation_partial
             observation_next_buffer.append(observation_next)
-            agent.record(observation_buffer, action, reward, observation_next_buffer, done)
+            agent.record(observation_buffer, action, reward, observation_next_buffer, survive)
 
             episode_cumulative_reward += reward
-            Record(tensor_board, timestep, observation, action, reward, done, episode_timestep, episode_cumulative_reward)
+            log_reward(tensor_board, timestep, survive, episode_cumulative_reward)
+            log_values(tensor_board, timestep, observation, action, reward, survive, learn)
+            if survive == 0.0:
+                print('---Terminated episode---\t\t\t\tEpisode timestep: ' + str(episode_timestep) + '\t\t\t\tCumulative reward: ' + str(episode_cumulative_reward))
 
             if render: environment.render()
             if render: time.sleep(render_delay)
 
-            if (timestep / learn_interval) >= learnstep:
+            if learn:
                 learnstep += 1
                 agent.learn()
                 if save:

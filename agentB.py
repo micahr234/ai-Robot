@@ -7,7 +7,7 @@ import copy
 from memory import *
 
 # Define agent
-class Agent():
+class AgentB():
 
     # ------------------------- Initialization -------------------------
 
@@ -17,7 +17,6 @@ class Agent():
                 latent_states,
 
                 latent_fwd_net,
-                latent_rev_net,
                 model_net,
                 reward_net,
                 survive_net,
@@ -32,14 +31,13 @@ class Agent():
                 action_output_transform,
 
                 latent_learn_rate,
-                latent_latent_learn_factor,
-
                 model_learn_rate,
                 reward_learn_rate,
                 survive_learn_rate,
                 value_learn_rate,
                 value_next_learn_factor,
                 policy_learn_rate,
+                policy_learn_noise_std,
 
                 batches,
                 batch_size,
@@ -50,7 +48,6 @@ class Agent():
         self.name = str(name)
         self.latent_states = latent_states
         self.latent_fwd_net_structure = latent_fwd_net
-        self.latent_rev_net_structure = latent_rev_net
         self.value_net_structure = value_net
         self.policy_net_structure = policy_net
         self.model_net_structure = model_net
@@ -67,8 +64,8 @@ class Agent():
         self.batch_size = batch_size
         self.log_level = log_level
         self.latent_learn_rate = latent_learn_rate
-        self.latent_latent_learn_factor = latent_latent_learn_factor
         self.policy_learn_rate = policy_learn_rate
+        self.policy_learn_entropy_factor = policy_learn_noise_std
         self.value_learn_rate = value_learn_rate
         self.value_next_learn_factor = value_next_learn_factor
         self.model_learn_rate = model_learn_rate
@@ -115,8 +112,8 @@ class Agent():
         self.policy_net_action_copy.eval()
 
         with torch.no_grad():
-            state_latent, _, _ = self.latent_net_action_copy(state, 0.0)
-            action = self.policy_net_action_copy(state_latent)
+            state_latent = self.latent_net_action_copy(state)
+            action = self.policy_net_action_copy(state_latent).sample()
 
         out_action = self.action_output_transform(action[0, :].cpu())
 
@@ -156,11 +153,14 @@ class Agent():
             state_next = state_next.to(self.train_device, non_blocking=True)
             survive = survive.to(self.train_device, non_blocking=True)
 
-            reward_latent_novelty = self.learn_latent(state, state_next)
+            self.learn_latent(state, action, state_next, reward, survive)
+
             with torch.no_grad():
-                state_latent, _, _ = self.latent_net(state, 0.0) #0.1 for testing only
-                state_next_latent, _, _ = self.latent_net(state_next, 0.0) #0.1 for testing only
+                state_latent = self.latent_net(state)
+                state_next_latent = self.latent_net(state_next)
+
             self.learn_env(state_latent, action, state_next_latent, reward, survive)
+
             self.learn_value(state_latent, action, state_next_latent, reward, survive)
             self.learn_policy(state_latent)
 
@@ -188,74 +188,46 @@ class Agent():
 
         pass
 
-    @staticmethod
-    def norm(t, dim=0, eps=1e-6):
-        t = t - torch.mean(t, dim=dim)
-        t = t / (torch.std(t, dim=dim) + eps)
-        return t
-
-    def learn_latent(self, state, state_next):
-
-        # get latent learn rates
-        self.latent_scheduler.step()
-        latent_learn_rate = self.latent_scheduler.get_last_lr()[0]
-        latent_latent_learn_factor = self.latent_latent_learn_factor(self.latent_scheduler.last_epoch)
-        if self.log_level >= 2:
-            self.tensor_board.add_scalar('learn_latent/learn_rate', latent_learn_rate, self.batch_count)
-            self.tensor_board.add_scalar('learn_latent/latent_learn_factor', latent_latent_learn_factor, self.batch_count)
+    def learn_latent(self, state, action, state_next, reward, survive):
 
         # latent forward pass
-        with torch.no_grad():
-            state_last_frame = state[:, [-1], :]
-            state_next_last_frame = state_next[:, [-1], :]
+        state_latent = self.latent_net(state)
+        state_next_latent = self.latent_net(state_next)
 
-        state_latent_last_frame, state_mu_last_frame, state_logvar_last_frame = self.latent_net(state_last_frame, 1.0)
-        state_last_frame_reconstructed = self.latent_net.reverse(state_latent_last_frame)
-
-        state_next_latent_last_frame, state_next_mu_last_frame, state_next_logvar_last_frame = self.latent_net(state_next_last_frame, 1.0)
-
-        with torch.no_grad():
-            state_last_frame_norm = self.norm(state_last_frame, dim=0)
+        state_next_latent_last_frame_prediction_dist, reward_prediction_dist, survive_prediction_dist = self.env_net(state_latent, action)
+        state_next_latent_last_frame = self.env_net.model_extract_last_frame(state_next_latent)
 
         # optimize latent
         self.latent_optimizer.zero_grad()
-        latent_reconstruction_loss_unreduced = torch.nn.functional.mse_loss(state_last_frame_reconstructed, state_last_frame_norm, reduction='none')
-        latent_reconstruction_loss = torch.mean(latent_reconstruction_loss_unreduced)
-        continuous_loss = torch.nn.functional.mse_loss(state_latent_last_frame, state_next_latent_last_frame)
-        continuous_loss.register_hook(lambda grad: grad * 1.0) # Needs work debug
-        latent_latent_loss = -0.5 * torch.mean(1 + state_logvar_last_frame - state_mu_last_frame.pow(2) - state_logvar_last_frame.exp())
-        latent_latent_loss.register_hook(lambda grad: grad * latent_latent_learn_factor)
-        latent_loss = latent_reconstruction_loss + latent_latent_loss + continuous_loss
+        state_next_predictive_loss = -torch.mean(state_next_latent_last_frame_prediction_dist.log_prob(state_next_latent_last_frame))
+        reward_predictive_loss = -torch.mean(reward_prediction_dist.log_prob(reward))
+        survive_predictive_loss = -torch.mean(survive_prediction_dist.log_prob(survive))
+        latent_loss = state_next_predictive_loss + reward_predictive_loss + survive_predictive_loss
         latent_loss.backward()
         self.latent_optimizer.step()
 
+        # update latent learn rates
+        self.latent_scheduler.step()
+
         # log latent results
         if self.log_level >= 1:
-            self.tensor_board.add_scalar('learn_latent/reconstruction_loss', latent_reconstruction_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('learn_latent/latent_loss', latent_latent_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_latent/state_next_predictive_log_loss', state_next_predictive_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_latent/reward_predictive_log_loss', reward_predictive_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_latent/survive_predictive_log_loss', survive_predictive_loss.item(), self.batch_count)
 
-        with torch.no_grad():
-            half = state.shape[0]
-            reward_latent_novelty = torch.sum(latent_reconstruction_loss_unreduced[:half, :], dim=-1, keepdim=True)
+        # log latent learn rates
+        if self.log_level >= 2:
+            self.tensor_board.add_scalar('learn_latent/learn_rate', self.latent_scheduler.get_last_lr()[0], self.batch_count)
 
-        return reward_latent_novelty
+        pass
 
     def learn_env(self, state_latent, action, state_next_latent, reward, survive):
 
-        # get model learn rates
-        self.env_scheduler.step()
-        model_learn_rate = self.env_scheduler.get_last_lr()[0]
-        reward_learn_rate = self.env_scheduler.get_last_lr()[1]
-        survive_learn_rate = self.env_scheduler.get_last_lr()[2]
-        if self.log_level >= 2:
-            self.tensor_board.add_scalar('learn_env/model_learn_rate', model_learn_rate, self.batch_count)
-            self.tensor_board.add_scalar('learn_env/reward_learn_rate', reward_learn_rate, self.batch_count)
-            self.tensor_board.add_scalar('learn_env/survive_learn_rate', survive_learn_rate, self.batch_count)
-
         # env forward pass
-        state_next_latent_prediction, reward_prediction, survive_prediction = self.env_net(state_latent, action)
-        with torch.no_grad():
-            state_next_latent_prediction_slow, reward_prediction_slow, survive_prediction_slow = self.env_net_slow_copy(state_latent, action)
+        state_next_latent_last_frame_prediction_dist, reward_prediction_dist, survive_prediction_dist = self.env_net(state_latent, action)
+        state_next_latent_last_frame = self.env_net.model_extract_last_frame(state_next_latent)
+        #with torch.no_grad():
+        #    state_next_latent_prediction_slow, reward_prediction_slow, survive_prediction_slow_dist = self.env_net_slow_copy(state_latent, action)
 
         # Calculate intrinsic reward
         with torch.no_grad():
@@ -269,42 +241,37 @@ class Agent():
 
         # optimize env
         self.env_optimizer.zero_grad()
-        model_loss = torch.nn.functional.mse_loss(state_next_latent_prediction[:, -1, :], state_next_latent[:, -1, :])
+        model_loss = -torch.mean(state_next_latent_last_frame_prediction_dist.log_prob(state_next_latent_last_frame))
         model_loss.backward()
-        survive_loss = torch.nn.functional.binary_cross_entropy(survive_prediction, survive)
-        survive_loss.backward()
-        reward_loss = torch.nn.functional.mse_loss(reward_prediction, reward_total)
+        reward_loss = -torch.mean(reward_prediction_dist.log_prob(reward))
         reward_loss.backward()
+        survive_loss = -torch.mean(survive_prediction_dist.log_prob(survive))
+        survive_loss.backward()
         self.env_optimizer.step()
-        self.polyak_averaging(self.env_net_slow_copy, self.env_net, 0.999)
+        #self.polyak_averaging(self.env_net_slow_copy, self.env_net, 0.999)
+
+        # update model learn rates
+        self.env_scheduler.step()
 
         # log env results
         if self.log_level >= 1:
-            self.tensor_board.add_scalar('learn_env/model_loss', model_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('learn_env/reward_loss', reward_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('learn_env/survive_loss', survive_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_env/model_log_loss', model_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_env/reward_log_loss', reward_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_env/survive_log_loss', survive_loss.item(), self.batch_count)
 
-        if self.log_level >= 3:
-            survive_false_pos = torch.clamp(survive_prediction - survive, 0, 1)
-            survive_false_neg = torch.clamp(survive - survive_prediction, 0, 1)
-            self.tensor_board.add_histogram('survive_false_pos', survive_false_pos, self.batch_count)
-            self.tensor_board.add_histogram('survive_false_neg', survive_false_neg, self.batch_count)
+        # log model learn rates
+        if self.log_level >= 2:
+            self.tensor_board.add_scalar('learn_env/model_learn_rate', self.env_scheduler.get_last_lr()[0], self.batch_count)
+            self.tensor_board.add_scalar('learn_env/reward_learn_rate', self.env_scheduler.get_last_lr()[1], self.batch_count)
+            self.tensor_board.add_scalar('learn_env/survive_learn_rate', self.env_scheduler.get_last_lr()[2], self.batch_count)
 
         pass
 
     def learn_value(self, state_latent, action, state_next_latent, reward, survive):
 
-        # get value learn rates
-        self.value_scheduler.step()
-        value_learn_rate = self.value_scheduler.get_last_lr()[0]
-        value_next_learn_factor = self.value_next_learn_factor(self.value_scheduler.last_epoch)
-        if self.log_level >= 2:
-            self.tensor_board.add_scalar('learn_value/learn_rate', value_learn_rate, self.batch_count)
-            self.tensor_board.add_scalar('learn_value/next_learn_factor', value_next_learn_factor, self.batch_count)
-
         # value forward pass
-        model_free_steps = 0
-        model_steps = 3
+        model_free_steps = 1
+        model_steps = 0
         steps = model_free_steps + model_steps
         state_latent_hypo = [None] * steps
         action_hypo = [None] * steps
@@ -324,15 +291,14 @@ class Agent():
                     state_latent_hypo[i] = state_latent
                     action_hypo[i] = action
                     state_next_latent_hypo[i], reward_hypo[i], survive_hypo[i] = (state_next_latent, reward, survive)
-                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i])
+                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i]).sample()
             else:
                 with torch.no_grad():
                     first_loop = True if i == 0 else False
                     state_latent_hypo[i] = state_latent if first_loop else state_next_latent_hypo[i-1]
-                    action_hypo[i] = self.policy_net(state_latent_hypo[i]) if first_loop else action_next_hypo[i-1]
-                    action_hypo[i] = action_hypo[i] + torch.normal(0, 0.05, size=action_hypo[i].shape, device=self.train_device) # Add noise - for testing
-                    state_next_latent_hypo[i], reward_hypo[i], survive_hypo[i] = self.env_net(state_latent_hypo[i], action_hypo[i])
-                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i])
+                    action_hypo[i] = self.policy_net(state_latent_hypo[i]).sample() if first_loop else action_next_hypo[i-1]
+                    state_next_latent_hypo[i], reward_hypo[i], survive_hypo[i] = self.env_net(state_latent_hypo[i], action_hypo[i])#need to fix
+                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i]).sample()
 
             value_hypo[i] = self.value_net(state_latent_hypo[i], action_hypo[i])
             value_next_hypo[i] = self.value_net(state_next_latent_hypo[i], action_next_hypo[i])
@@ -340,10 +306,14 @@ class Agent():
 
             # optimize value
             self.value_optimizer.zero_grad()
-            value_next_hypo[i].register_hook(lambda grad: grad * value_next_learn_factor)
+            value_next_hypo[i].register_hook(lambda grad: grad * self.value_scheduler_next_learn_factor)
             value_loss[i] = torch.nn.functional.mse_loss(value_diff_hypo[i], reward_hypo[i])
             value_loss[i].backward()
             self.value_optimizer.step()
+
+        # update value learn rates
+        self.value_scheduler.step()
+        self.value_scheduler_next_learn_factor = self.value_next_learn_factor(self.value_scheduler.last_epoch)
 
         # log value results
         if self.log_level >= 1:
@@ -353,29 +323,42 @@ class Agent():
             self.tensor_board.add_scalar('learn_value/avg', value_avg.item(), self.batch_count)
             self.tensor_board.add_scalar('learn_value/loss', value_loss_avg.item(), self.batch_count)
 
+        # log value learn rates
+        if self.log_level >= 2:
+            self.tensor_board.add_scalar('learn_value/learn_rate', self.value_scheduler.get_last_lr()[0], self.batch_count)
+            self.tensor_board.add_scalar('learn_value/next_learn_factor', self.value_scheduler_next_learn_factor, self.batch_count)
+
         pass
 
     def learn_policy(self, state_latent):
-        
-        # get policy learn rates
-        self.policy_scheduler.step()
-        policy_learn_rate = self.policy_scheduler.get_last_lr()[0]
-        if self.log_level >= 2:
-            self.tensor_board.add_scalar('learn_policy/learn_rate', policy_learn_rate, self.batch_count)
 
         # policy forward pass
-        action_chosen = self.policy_net(state_latent)
-        value = self.value_net(state_latent, action_chosen)
+        action_dist = self.policy_net(state_latent)
+        action = action_dist.rsample()
+        value = self.value_net(state_latent, action)
 
         # optimize policy
         self.policy_optimizer.zero_grad()
-        policy_loss = -torch.mean(value)
+        policy_value_loss = -torch.mean(value)
+        policy_entropy_loss = -torch.mean(action_dist.base_dist.entropy())
+        policy_entropy_loss.register_hook(lambda grad: grad * 0.0001)
+        policy_loss = policy_value_loss + policy_entropy_loss
         policy_loss.backward()
         self.policy_optimizer.step()
 
+        # update policy learn rates
+        self.policy_scheduler.step()
+        self.policy_scheduler_entropy_factor = self.policy_learn_entropy_factor(self.policy_scheduler.last_epoch)
+
         # log policy results
         if self.log_level >= 1:
-            self.tensor_board.add_scalar('learn_policy/loss', policy_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_policy/value_loss', policy_value_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_policy/entropy_loss', policy_entropy_loss.item(), self.batch_count)
+
+        # log policy learn rates
+        if self.log_level >= 2:
+            self.tensor_board.add_scalar('learn_policy/learn_rate', self.policy_scheduler.get_last_lr()[0], self.batch_count)
+            self.tensor_board.add_scalar('learn_policy/entropy_factor', self.policy_scheduler_entropy_factor, self.batch_count)
 
         pass
 
@@ -396,55 +379,22 @@ class Agent():
 
         class Latent_Net(torch.nn.Module):
 
-            def __init__(self, fwd_net, rev_net, latent_states):
+            def __init__(self, fwd_net):
                 super().__init__()
                 self.fwd_net = fwd_net
-                self.rev_net = rev_net
-                self.latent_states = latent_states
                 pass
 
-            def encode(self, state):
-                y = self.fwd_net(state)
-                mu = y[:, :self.latent_states]
-                logvar = y[:, self.latent_states:]
-                return mu, logvar
-
-            def reparameterize(self, mu, logvar, a):
-                std = torch.exp(0.5 * logvar)
-                eps = torch.randn_like(std)
-                z = mu + eps * std * a
-                return z
-
-            def decode(self, z):
-                r = self.rev_net(z)
-                return r
-
-            def forward(self, state, a):
+            def forward(self, state):
                 steps = state.shape[1]
-                mu_list = [None] * steps
-                logvar_list = [None] * steps
-                z_list = [None] * steps
+                state_latent_list = [None] * steps
                 for i in range(state.shape[1]):
-                    mu_list[i], logvar_list[i] = self.encode(state[:, i, :])
-                    z_list[i] = self.reparameterize(mu_list[i], logvar_list[i], a)
-                    mu_list[i] = torch.unsqueeze(mu_list[i], 1)
-                    logvar_list[i] = torch.unsqueeze(logvar_list[i], 1)
-                    z_list[i] = torch.unsqueeze(z_list[i], 1)
-                z = torch.cat(z_list, dim=1)
-                mu = torch.cat(mu_list, dim=1)
-                logvar = torch.cat(logvar_list, dim=1)
-                return z, mu, logvar
+                    y = self.fwd_net(state[:, i, :])
+                    state_latent_list[i] = y
+                    state_latent_list[i] = torch.unsqueeze(state_latent_list[i], 1)
+                state_latent = torch.cat(state_latent_list, dim=1)
+                return state_latent
 
-            def reverse(self, z):
-                steps = z.shape[1]
-                state_list = [None] * steps
-                for i in range(steps):
-                    state_list[i] = self.decode(z[:, i, :])
-                    state_list[i] = torch.unsqueeze(state_list[i], 1)
-                state = torch.cat(state_list, dim=1)
-                return state
-
-        self.latent_net = Latent_Net(self.latent_fwd_net_structure, self.latent_rev_net_structure, self.latent_states).to(self.train_device)
+        self.latent_net = Latent_Net(self.latent_fwd_net_structure).to(self.train_device)
 
         if self.latent_filename.is_file():
             # Load latent network
@@ -471,7 +421,14 @@ class Agent():
 
             def forward(self, state_input):
                 y = self.net(state_input.flatten(start_dim=1))
-                return y
+                halfsize = int(y.shape[-1] / 2)
+                action_mu = torch.tanh(y[:, :halfsize])
+                action_logvar = y[:, halfsize:]
+                action_sigma = torch.exp(action_logvar / 2)
+                action_dist_pre = torch.distributions.normal.Normal(action_mu, action_sigma)
+                transform = torch.distributions.transforms.TanhTransform(cache_size=0)
+                action_dist = torch.distributions.transformed_distribution.TransformedDistribution(action_dist_pre, transform)
+                return action_dist
 
         self.policy_net = Policy_Net(self.policy_net_structure).to(self.train_device)
 
@@ -486,6 +443,7 @@ class Agent():
 
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=1.0)
         self.policy_scheduler = torch.optim.lr_scheduler.LambdaLR(self.policy_optimizer, self.policy_learn_rate, last_epoch=-1)
+        self.policy_scheduler_entropy_factor = self.policy_learn_entropy_factor(self.policy_scheduler.last_epoch)
 
         pass
 
@@ -516,6 +474,7 @@ class Agent():
 
         self.value_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=1.0)
         self.value_scheduler = torch.optim.lr_scheduler.LambdaLR(self.value_optimizer, self.value_learn_rate, last_epoch=-1)
+        self.value_scheduler_next_learn_factor = self.value_next_learn_factor(self.value_scheduler.last_epoch)
 
         pass
 
@@ -532,28 +491,47 @@ class Agent():
 
             def model_forward(self, state, action):
                 c = torch.cat((state.flatten(start_dim=1), action), dim=-1)
-                state_next_last_frame = self.model_net(c)
-                state_next = torch.cat((state[:, 1:, :], state_next_last_frame.unsqueeze(1)), dim=1)
+                y = self.model_net(c)
+                halfsize = int(y.shape[-1] / 2)
+                state_next_last_frame_diff_mu = y[:, :halfsize].unsqueeze(1)
+                state_next_last_frame_diff_logvar = y[:, halfsize:].unsqueeze(1)
+                state_next_last_frame_mu = state_next_last_frame_diff_mu # + state[:, [-1], :]
+                state_next_last_frame_logvar = state_next_last_frame_diff_logvar
+                state_next_last_frame_sigma = torch.clamp(torch.exp(state_next_last_frame_logvar / 2), min=0.01)
+                state_next_last_frame_dist = torch.distributions.normal.Normal(state_next_last_frame_mu, state_next_last_frame_sigma)
+                return state_next_last_frame_dist
+
+            def model_cat_next_frame(self, state, state_next_last_frame):
+                state_next = torch.cat((state[:, 1:, :], state_next_last_frame), dim=1)
                 return state_next
 
-            def reward_forward(self, state, state_next, action):
-                state_next_last_frame = state_next[:, -1, :]
-                c = torch.cat((state.flatten(start_dim=1), state_next_last_frame, action), dim=-1)
-                reward = self.reward_net(c)
-                return reward
+            def model_extract_last_frame(self, state):
+                state_last_frame = state[:, [-1], :]
+                return state_last_frame
 
-            def survive_forward(self, state, state_next, action):
-                state_next_last_frame = state_next[:, -1, :]
-                c = torch.cat((state.flatten(start_dim=1), state_next_last_frame, action), dim=-1)
-                survive = self.survive_net(c)
-                return survive
+            def reward_forward(self, state, state_next_last_frame_mu, state_next_last_frame_sigma, action):
+                c = torch.cat((state.flatten(start_dim=1), state_next_last_frame_mu.flatten(start_dim=1), state_next_last_frame_sigma.flatten(start_dim=1), action), dim=-1)
+                y = self.reward_net(c)
+                halfsize = int(y.shape[-1] / 2)
+                reward_mu = y[:, :halfsize]
+                reward_logvar = y[:, halfsize:]
+                reward_sigma = torch.clamp(torch.exp(reward_logvar / 2), min=0.01)
+                reward_dist = torch.distributions.normal.Normal(reward_mu, reward_sigma)
+                return reward_dist
+
+            def survive_forward(self, state, state_next_last_frame, state_next_last_frame_sigma, action):
+                c = torch.cat((state.flatten(start_dim=1), state_next_last_frame.flatten(start_dim=1), state_next_last_frame_sigma.flatten(start_dim=1), action), dim=-1)
+                y = self.survive_net(c)
+                survive_dist = torch.distributions.bernoulli.Bernoulli(logits=y)
+                return survive_dist
 
             def forward(self, state, action):
-                state_next = self.model_forward(state, action)
-                state_next_detach = state_next.detach()
-                reward = self.reward_forward(state, state_next_detach, action)
-                survive = self.survive_forward(state, state_next_detach, action)
-                return state_next, reward, survive
+                state_next_last_frame_dist = self.model_forward(state, action)
+                state_next_last_frame_mu_detach = state_next_last_frame_dist.loc.detach()
+                state_next_last_frame_logvar_detach = torch.log(state_next_last_frame_dist.variance).detach()
+                reward_dist = self.reward_forward(state, state_next_last_frame_mu_detach, state_next_last_frame_logvar_detach, action)
+                survive_dist = self.survive_forward(state, state_next_last_frame_mu_detach, state_next_last_frame_logvar_detach, action)
+                return state_next_last_frame_dist, reward_dist, survive_dist
 
         self.env_net = Env_Net(self.model_net_structure, self.reward_net_structure, self.survive_net_structure).to(self.train_device)
 
@@ -568,8 +546,7 @@ class Agent():
 
         self.env_optimizer = torch.optim.Adam([{'params': self.env_net.model_net.parameters()},
                                                {'params': self.env_net.reward_net.parameters()},
-                                               #{'params': self.env_net.survive_net.parameters(), 'weight_decay': 0.001}
-                                               {'params': self.env_net.survive_net.parameters(), 'weight_decay': 0.0}
+                                               {'params': self.env_net.survive_net.parameters()}
                                                ], lr=1.0)
         self.env_scheduler = torch.optim.lr_scheduler.LambdaLR(self.env_optimizer, (self.model_learn_rate, self.reward_learn_rate, self.survive_learn_rate), last_epoch=-1)
 
