@@ -10,23 +10,10 @@ state_frames = 3
 num_of_actions = 2
 num_of_latent_states = num_of_states * 2
 
-class Sin(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        pass
-    def forward(self, input):
-        return torch.sin(input)
-
 latent_fwd_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_states, 32),
-    torch.nn.ReLU(),
-    torch.nn.Linear(32, num_of_latent_states * 2)
+    torch.nn.Linear(num_of_states, num_of_latent_states)
 )
-latent_rev_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states, 32),
-    torch.nn.ReLU(),
-    torch.nn.Linear(32, num_of_states)
-)
+
 policy_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * state_frames, 512),
     torch.nn.ReLU(),
@@ -34,10 +21,9 @@ policy_net = torch.nn.Sequential(
     torch.nn.ReLU(),
     torch.nn.Linear(256, 128),
     torch.nn.ReLU(),
-    torch.nn.Linear(128, num_of_actions),
-    #torch.nn.Tanh(),
-    Sin()
+    torch.nn.Linear(128, num_of_actions * 2)
 )
+
 value_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
     torch.nn.ReLU(),
@@ -47,6 +33,7 @@ value_net = torch.nn.Sequential(
     torch.nn.ReLU(),
     torch.nn.Linear(128, 1)
 )
+
 model_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
     torch.nn.ReLU(),
@@ -54,26 +41,27 @@ model_net = torch.nn.Sequential(
     torch.nn.ReLU(),
     torch.nn.Linear(256, 128),
     torch.nn.ReLU(),
-    torch.nn.Linear(128, num_of_latent_states)
+    torch.nn.Linear(128, num_of_latent_states * 2)
 )
+
 reward_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
+    torch.nn.Linear(num_of_latent_states * state_frames + num_of_latent_states * 2 + num_of_actions, 512),
+    torch.nn.ReLU(),
+    torch.nn.Linear(512, 256),
+    torch.nn.ReLU(),
+    torch.nn.Linear(256, 128),
+    torch.nn.ReLU(),
+    torch.nn.Linear(128, 1 * 2)
+)
+
+survive_net = torch.nn.Sequential(
+    torch.nn.Linear(num_of_latent_states * state_frames + num_of_latent_states * 2 + num_of_actions, 512),
     torch.nn.ReLU(),
     torch.nn.Linear(512, 256),
     torch.nn.ReLU(),
     torch.nn.Linear(256, 128),
     torch.nn.ReLU(),
     torch.nn.Linear(128, 1)
-)
-survive_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
-    torch.nn.ReLU(),
-    torch.nn.Linear(512, 256),
-    torch.nn.ReLU(),
-    torch.nn.Linear(256, 128),
-    torch.nn.ReLU(),
-    torch.nn.Linear(128, 1),
-    torch.nn.Sigmoid()
 )
 
 def scale(tensor, input_min, input_max):
@@ -122,14 +110,13 @@ Execute(
 
     agent_name='agent',
     max_timestep=20000,
-    learn_interval=50,
-    batches=50,
+    learn_interval=500,
+    batches=500,
     batch_size=200,
     memory_buffer_size=20000,
     save=False,
 
     latent_fwd_net=latent_fwd_net,
-    latent_rev_net=latent_rev_net,
     model_net=model_net,
     reward_net=reward_net,
     survive_net=survive_net,
@@ -138,15 +125,15 @@ Execute(
     state_frames=state_frames,
     latent_states=num_of_latent_states,
 
-    latent_learn_rate=lambda batch: 0.001 * 0.9995**batch + 0.0001,
-    latent_latent_learn_factor=lambda batch: 1.0 + 0.5 * np.cos(batch/200) * 0.9998**batch,
-    model_learn_rate=lambda batch: 0.001 * 0.9995**batch + 0.0001,
-    reward_learn_rate=lambda batch: 0.001 * 0.9995**batch + 0.0001,
-    survive_learn_rate=lambda batch: 0.001 * 0.9995**batch + 0.0001,
-    value_learn_rate=lambda batch: 0.001,
-    value_next_learn_factor=lambda batch: 0.8,
+    latent_learn_rate=lambda batch: 0.0001,
+    model_learn_rate=lambda batch: 0.0001,
+    reward_learn_rate=lambda batch: 0.0001,
+    survive_learn_rate=lambda batch: 0.0001,
+    value_learn_rate=lambda batch: 0.0001,
+    value_next_learn_factor=lambda batch: 0.95,
     policy_learn_rate=lambda batch: 0.0001,
+    policy_learn_noise_std=lambda batch: 0.1,
 
     profile=False,
-    log_level=10
+    log_level=1
 )

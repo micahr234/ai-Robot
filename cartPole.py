@@ -23,7 +23,7 @@ policy_net = torch.nn.Sequential(
     torch.nn.ReLU(),
     torch.nn.Linear(256, 128),
     torch.nn.ReLU(),
-    torch.nn.Linear(128, num_of_actions * 2)
+    torch.nn.Linear(128, num_of_actions * 3 * 5)
 )
 
 value_net = torch.nn.Sequential(
@@ -96,9 +96,9 @@ def action_output_transform(action):
 gym_env = gym.make('CartPoleBulletEnv-v1', renders=True, discrete_actions=False)
 
 Execute(
-    instance_name='CubeChase1',
+    instance_name='CartPole1',
 
-    environment_name='CubeChase',
+    environment_name='CartPole',
     environment=gym_env,
     state_input_transform=state_input_transform,
     reward_input_transform=reward_input_transform,
@@ -130,10 +130,11 @@ Execute(
     model_learn_rate=lambda batch: 0.0001,
     reward_learn_rate=lambda batch: 0.0001,
     survive_learn_rate=lambda batch: 0.0001,
-    value_learn_rate=lambda batch: 0.0001,
-    value_next_learn_factor=lambda batch: 0.95,
+    value_learn_rate=lambda batch: 0.0003,
+    value_next_learn_factor=lambda batch: 0.98,
     policy_learn_rate=lambda batch: 0.0001,
-    policy_learn_noise_std=lambda batch: 0.1,
+    policy_learn_entropy_factor=lambda batch: 0.0001,
+    policy_action_samples=20,
 
     profile=False,
     log_level=1

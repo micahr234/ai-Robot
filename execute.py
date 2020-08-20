@@ -49,7 +49,8 @@ def Execute(
             value_learn_rate,
             value_next_learn_factor,
             policy_learn_rate,
-            policy_learn_noise_std,
+            policy_learn_entropy_factor,
+            policy_action_samples,
 
             profile,
             log_level
@@ -113,7 +114,8 @@ def Execute(
             memory_buffer_size=memory_buffer_size,
             latent_learn_rate=latent_learn_rate,
             policy_learn_rate=policy_learn_rate,
-            policy_learn_noise_std=policy_learn_noise_std,
+            policy_learn_entropy_factor=policy_learn_entropy_factor,
+            policy_action_samples=policy_action_samples,
             value_learn_rate=value_learn_rate,
             value_next_learn_factor=value_next_learn_factor,
             model_learn_rate=model_learn_rate,
@@ -199,8 +201,8 @@ def Execute(
 
             action = agent.act(observation_buffer)
 
-            if not np.any(-1.0 <= np.array(action) and np.array(action) <= 1.0):
-                raise ValueError('Action cannot be outside range -1 to 1')
+            if not np.any(np.logical_and(-1.0 <= np.array(action), np.array(action) <= 1.0)):
+                raise ValueError('Action cannot be outside range -1 to 1.')
 
             scaled_action = (np.array(action) / 2 + 0.5) * (action_space_max - action_space_min) + action_space_min
             next_observation_partial, reward, terminate, info = environment.step(scaled_action)

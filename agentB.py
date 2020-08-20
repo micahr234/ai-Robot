@@ -37,7 +37,8 @@ class AgentB():
                 value_learn_rate,
                 value_next_learn_factor,
                 policy_learn_rate,
-                policy_learn_noise_std,
+                policy_learn_entropy_factor,
+                policy_action_samples,
 
                 batches,
                 batch_size,
@@ -65,7 +66,8 @@ class AgentB():
         self.log_level = log_level
         self.latent_learn_rate = latent_learn_rate
         self.policy_learn_rate = policy_learn_rate
-        self.policy_learn_entropy_factor = policy_learn_noise_std
+        self.policy_learn_entropy_factor = policy_learn_entropy_factor
+        self.policy_action_samples = policy_action_samples
         self.value_learn_rate = value_learn_rate
         self.value_next_learn_factor = value_next_learn_factor
         self.model_learn_rate = model_learn_rate
@@ -112,7 +114,7 @@ class AgentB():
         self.policy_net_action_copy.eval()
 
         with torch.no_grad():
-            state_latent = self.latent_net_action_copy(state)
+            state_latent = self.latent_net_action_copy.forward_multi(state)
             action = self.policy_net_action_copy(state_latent).sample()
 
         out_action = self.action_output_transform(action[0, :].cpu())
@@ -156,8 +158,8 @@ class AgentB():
             self.learn_latent(state, action, state_next, reward, survive)
 
             with torch.no_grad():
-                state_latent = self.latent_net(state)
-                state_next_latent = self.latent_net(state_next)
+                state_latent = self.latent_net.forward_multi(state)
+                state_next_latent = self.latent_net.forward_multi(state_next)
 
             self.learn_env(state_latent, action, state_next_latent, reward, survive)
 
@@ -191,8 +193,8 @@ class AgentB():
     def learn_latent(self, state, action, state_next, reward, survive):
 
         # latent forward pass
-        state_latent = self.latent_net(state)
-        state_next_latent = self.latent_net(state_next)
+        state_latent = self.latent_net.forward_multi(state)
+        state_next_latent = self.latent_net.forward_multi(state_next)
 
         state_next_latent_last_frame_prediction_dist, reward_prediction_dist, survive_prediction_dist = self.env_net(state_latent, action)
         state_next_latent_last_frame = self.env_net.model_extract_last_frame(state_next_latent)
@@ -211,9 +213,9 @@ class AgentB():
 
         # log latent results
         if self.log_level >= 1:
-            self.tensor_board.add_scalar('learn_latent/state_next_predictive_log_loss', state_next_predictive_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('learn_latent/reward_predictive_log_loss', reward_predictive_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('learn_latent/survive_predictive_log_loss', survive_predictive_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_latent/state_next_predictive_log_likelihood_loss', state_next_predictive_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_latent/reward_predictive_log_likelihood_loss', reward_predictive_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_latent/survive_predictive_log_likelihood_loss', survive_predictive_loss.item(), self.batch_count)
 
         # log latent learn rates
         if self.log_level >= 2:
@@ -255,9 +257,9 @@ class AgentB():
 
         # log env results
         if self.log_level >= 1:
-            self.tensor_board.add_scalar('learn_env/model_log_loss', model_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('learn_env/reward_log_loss', reward_loss.item(), self.batch_count)
-            self.tensor_board.add_scalar('learn_env/survive_log_loss', survive_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_env/model_log_likelihood_loss', model_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_env/reward_log_likelihood_loss', reward_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_env/survive_log_likelihood_loss', survive_loss.item(), self.batch_count)
 
         # log model learn rates
         if self.log_level >= 2:
@@ -291,23 +293,24 @@ class AgentB():
                     state_latent_hypo[i] = state_latent
                     action_hypo[i] = action
                     state_next_latent_hypo[i], reward_hypo[i], survive_hypo[i] = (state_next_latent, reward, survive)
-                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i]).sample()
+                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i]).sample([self.policy_action_samples])
             else:
                 with torch.no_grad():
                     first_loop = True if i == 0 else False
                     state_latent_hypo[i] = state_latent if first_loop else state_next_latent_hypo[i-1]
-                    action_hypo[i] = self.policy_net(state_latent_hypo[i]).sample() if first_loop else action_next_hypo[i-1]
+                    action_hypo[i] = self.policy_net(state_latent_hypo[i]).sample([self.policy_action_samples]) if first_loop else action_next_hypo[i - 1]
                     state_next_latent_hypo[i], reward_hypo[i], survive_hypo[i] = self.env_net(state_latent_hypo[i], action_hypo[i])#need to fix
-                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i]).sample()
+                    action_next_hypo[i] = self.policy_net(state_next_latent_hypo[i]).sample([self.policy_action_samples])
 
             value_hypo[i] = self.value_net(state_latent_hypo[i], action_hypo[i])
-            value_next_hypo[i] = self.value_net(state_next_latent_hypo[i], action_next_hypo[i])
+            value_next_hypo[i] = self.value_net.forward_multi_action(state_next_latent_hypo[i], action_next_hypo[i])
             value_diff_hypo[i] = value_hypo[i] - value_next_hypo[i] * survive_hypo[i]
+            reward_hypo_exp = reward_hypo[i].unsqueeze(dim=0).expand([self.policy_action_samples] + list(reward_hypo[i].shape))
 
             # optimize value
             self.value_optimizer.zero_grad()
             value_next_hypo[i].register_hook(lambda grad: grad * self.value_scheduler_next_learn_factor)
-            value_loss[i] = torch.nn.functional.mse_loss(value_diff_hypo[i], reward_hypo[i])
+            value_loss[i] = torch.nn.functional.mse_loss(value_diff_hypo[i], reward_hypo_exp)
             value_loss[i].backward()
             self.value_optimizer.step()
 
@@ -334,14 +337,19 @@ class AgentB():
 
         # policy forward pass
         action_dist = self.policy_net(state_latent)
-        action = action_dist.rsample()
-        value = self.value_net(state_latent, action)
+
+        with torch.no_grad():
+            action = action_dist.sample([self.policy_action_samples])
+            value = self.value_net.forward_multi_action(state_latent, action)
+            value_softmax = torch.softmax(value, dim=0) - (1.0 / self.policy_action_samples)
 
         # optimize policy
         self.policy_optimizer.zero_grad()
-        policy_value_loss = -torch.mean(value)
-        policy_entropy_loss = -torch.mean(action_dist.base_dist.entropy())
-        policy_entropy_loss.register_hook(lambda grad: grad * 0.0001)
+        action_log_prob = action_dist.log_prob(action)
+        action_entropy = -torch.sum(torch.exp(action_log_prob) * action_log_prob, dim=0)
+        policy_value_loss = -torch.mean(action_log_prob * value_softmax)
+        policy_entropy_loss = -torch.mean(action_entropy)
+        policy_entropy_loss.register_hook(lambda grad: grad * self.policy_scheduler_entropy_factor)
         policy_loss = policy_value_loss + policy_entropy_loss
         policy_loss.backward()
         self.policy_optimizer.step()
@@ -352,7 +360,7 @@ class AgentB():
 
         # log policy results
         if self.log_level >= 1:
-            self.tensor_board.add_scalar('learn_policy/value_loss', policy_value_loss.item(), self.batch_count)
+            self.tensor_board.add_scalar('learn_policy/value_log_likelihood_loss', policy_value_loss.item(), self.batch_count)
             self.tensor_board.add_scalar('learn_policy/entropy_loss', policy_entropy_loss.item(), self.batch_count)
 
         # log policy learn rates
@@ -385,14 +393,21 @@ class AgentB():
                 pass
 
             def forward(self, state):
-                steps = state.shape[1]
-                state_latent_list = [None] * steps
-                for i in range(state.shape[1]):
-                    y = self.fwd_net(state[:, i, :])
-                    state_latent_list[i] = y
-                    state_latent_list[i] = torch.unsqueeze(state_latent_list[i], 1)
-                state_latent = torch.cat(state_latent_list, dim=1)
+                state_latent = self.fwd_net(state)
                 return state_latent
+
+            def forward_multi(self, multi_state, dim=1):
+                working_shape = list(multi_state.shape)
+                dim_value = working_shape[dim]
+                del working_shape[dim]
+                working_shape[0] = -1
+                working_multi_state = multi_state.view(working_shape)
+                working_multi_state_latent = self.forward(working_multi_state)
+                output_shape = list(working_multi_state_latent.shape)
+                output_shape[0] = -1
+                output_shape.insert(dim, dim_value)
+                multi_state_latent = working_multi_state_latent.view(output_shape)
+                return multi_state_latent
 
         self.latent_net = Latent_Net(self.latent_fwd_net_structure).to(self.train_device)
 
@@ -419,15 +434,28 @@ class AgentB():
                 self.net = net
                 pass
 
-            def forward(self, state_input):
-                y = self.net(state_input.flatten(start_dim=1))
-                halfsize = int(y.shape[-1] / 2)
-                action_mu = torch.tanh(y[:, :halfsize])
-                action_logvar = y[:, halfsize:]
+            def forward(self, state):
+                y = self.net(state.flatten(start_dim=1))
+
+                num_of_dist = 5
+                shape = list(y.shape)
+                shape_value = shape[-1]
+                del shape[-1]
+                shape = shape + [-1, num_of_dist, 3]
+                yr = y.reshape(shape)
+
+                action_mu = torch.tanh(yr[:, :, :, 0])
+                action_logvar = yr[:, :, :, 1]
                 action_sigma = torch.exp(action_logvar / 2)
-                action_dist_pre = torch.distributions.normal.Normal(action_mu, action_sigma)
+                action_mix = yr[:, :, :, 2]
+                comp = torch.distributions.normal.Normal(action_mu, action_sigma)
+                mix = torch.distributions.categorical.Categorical(logits=action_mix)
+
+                action_dist_pre = torch.distributions.mixture_same_family.MixtureSameFamily(mix, comp)
+
                 transform = torch.distributions.transforms.TanhTransform(cache_size=0)
                 action_dist = torch.distributions.transformed_distribution.TransformedDistribution(action_dist_pre, transform)
+
                 return action_dist
 
         self.policy_net = Policy_Net(self.policy_net_structure).to(self.train_device)
@@ -456,10 +484,32 @@ class AgentB():
                 self.net = net
                 pass
 
-            def forward(self, state_input, action_input):
-                c = torch.cat((state_input.flatten(start_dim=1), action_input), dim=-1)
+            def forward(self, state, action):
+                c = torch.cat((state.flatten(start_dim=1), action), dim=-1)
                 y = self.net(c)
                 return y
+
+            def forward_multi_action(self, state, multi_action, dim=0):
+                working_action_shape = list(multi_action.shape)
+                dim_value = working_action_shape[dim]
+                del working_action_shape[dim]
+                working_action_shape[0] = -1
+                working_multi_action = multi_action.view(working_action_shape)
+
+                multi_state_shape = [1] * (len(list(state.shape)) + 1)
+                multi_state_shape[dim] = dim_value
+                multi_state = state.repeat(multi_state_shape)
+                working_state_shape = list(multi_state.shape)
+                del working_state_shape[dim]
+                working_state_shape[0] = -1
+                working_multi_state = multi_state.view(working_state_shape)
+
+                working_multi_value = self.forward(working_multi_state, working_multi_action)
+                output_shape = list(working_multi_value.shape)
+                output_shape[0] = -1
+                output_shape.insert(dim, dim_value)
+                multi_value = working_multi_value.view(output_shape)
+                return multi_value
 
         self.value_net = Value_Net(self.value_net_structure).to(self.train_device)
 
