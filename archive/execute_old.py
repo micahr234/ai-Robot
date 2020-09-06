@@ -11,7 +11,7 @@ import pybullet_envs
 import pybullet_data
 import torch
 
-from agent import agent
+from agentA import agent
 
 parser = argparse.ArgumentParser()
 

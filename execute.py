@@ -8,52 +8,53 @@ from collections import deque
 
 import torch
 
-from agent import Agent
-from agentB import AgentB
+from agent_model_based_stochastic_actor import agent_model_based_stochastic_actor
+from agent_model_free_stochastic_actor import agent_model_free_stochastic_actor
 
 def Execute(
-            instance_name,
+            instance_name=None,
 
-            environment_name,
-            environment,
-            state_input_transform,
-            reward_input_transform,
-            action_input_transform,
-            survive_input_transform,
-            action_output_transform,
-            episode_timestamp,
-            render,
-            render_delay,
+            environment_name=None,
+            environment=None,
+            state_input_transform=None,
+            reward_input_transform=None,
+            action_input_transform=None,
+            survive_input_transform=None,
+            action_output_transform=None,
+            episode_timestamp=None,
+            render=None,
+            render_delay=None,
 
-            agent_name,
-            max_timestep,
-            learn_interval,
-            batches,
-            batch_size,
-            memory_buffer_size,
-            save,
+            agent_name=None,
+            max_timestep=None,
+            learn_interval=None,
+            batches=None,
+            batch_size=None,
+            memory_buffer_size=None,
+            save=None,
 
-            latent_fwd_net,
-            model_net,
-            reward_net,
-            survive_net,
-            value_net,
-            policy_net,
-            state_frames,
-            latent_states,
+            latent_net=None,
+            model_net=None,
+            reward_net=None,
+            survive_net=None,
+            value_net=None,
+            policy_net=None,
+            state_frames=None,
+            latent_states=None,
 
-            latent_learn_rate,
-            model_learn_rate,
-            reward_learn_rate,
-            survive_learn_rate,
-            value_learn_rate,
-            value_next_learn_factor,
-            policy_learn_rate,
-            policy_learn_entropy_factor,
-            policy_action_samples,
+            latent_learn_rate=None,
+            model_learn_rate=None,
+            reward_learn_rate=None,
+            survive_learn_rate=None,
+            value_learn_rate=None,
+            value_next_learn_factor=None,
+            value_action_samples=None,
+            value_hallu_loops=None,
+            policy_learn_rate=None,
+            policy_action_samples=None,
 
-            profile,
-            log_level
+            profile=None,
+            log_level=None
             ):
 
     print('')
@@ -70,22 +71,34 @@ def Execute(
     if log_level >= 1:
         log_params = {}
         log_params['environment_name'] = environment_name
-        log_params['state_frames'] = state_frames
         log_params['agent_name'] = agent_name
-        log_params['latent_states'] = latent_states
-        log_params['latent_fwd_net'] = latent_fwd_net
+        log_params['instance_name'] = instance_name
+
+        log_params['learn_interval'] = learn_interval
+        log_params['batches'] = batches
+        log_params['batch_size'] = batch_size
+        log_params['memory_buffer_size'] = memory_buffer_size
+
+        log_params['latent_net'] = latent_net
         log_params['value_net'] = value_net
         log_params['policy_net'] = policy_net
         log_params['model_net'] = policy_net
         log_params['reward_net'] = reward_net
         log_params['survive_net'] = survive_net
-        log_params['instance_name'] = instance_name
-        log_params['max_timestep'] = max_timestep
-        log_params['learn_interval'] = learn_interval
-        log_params['episode_timestamp'] = episode_timestamp
-        log_params['batches'] = batches
-        log_params['batch_size'] = batch_size
-        log_params['memory_buffer_size'] = memory_buffer_size
+        log_params['state_frames'] = state_frames
+        log_params['latent_states'] = latent_states
+
+        log_params['latent_learn_rate'] = latent_learn_rate
+        log_params['model_learn_rate'] = model_learn_rate
+        log_params['reward_learn_rate'] = reward_learn_rate
+        log_params['survive_learn_rate'] = survive_learn_rate
+        log_params['value_learn_rate'] = value_learn_rate
+        log_params['value_next_learn_factor'] = value_next_learn_factor
+        log_params['value_action_samples'] = value_action_samples
+        log_params['value_hallu_loops'] = value_hallu_loops
+        log_params['policy_learn_rate'] = policy_learn_rate
+        log_params['policy_action_samples'] = policy_action_samples
+
         tensor_board.add_text('Hyper Params', str(log_params), 0)
 
     print('')
@@ -98,11 +111,11 @@ def Execute(
     #    env = gym.make(environment_name)
 
     print('Creating agent: ' + agent_name)
-    if agent_name == 'agent':
-        agent = AgentB(
+    if agent_name == 'agent_model_based_stochastic_actor':
+        agent = agent_model_based_stochastic_actor(
             name=instance_name,
             latent_states=latent_states,
-            latent_fwd_net=latent_fwd_net,
+            latent_net=latent_net,
             value_net=value_net,
             policy_net=policy_net,
             model_net=model_net,
@@ -113,14 +126,36 @@ def Execute(
             batches=batches,
             memory_buffer_size=memory_buffer_size,
             latent_learn_rate=latent_learn_rate,
-            policy_learn_rate=policy_learn_rate,
-            policy_learn_entropy_factor=policy_learn_entropy_factor,
-            policy_action_samples=policy_action_samples,
-            value_learn_rate=value_learn_rate,
-            value_next_learn_factor=value_next_learn_factor,
             model_learn_rate=model_learn_rate,
             reward_learn_rate=reward_learn_rate,
             survive_learn_rate=survive_learn_rate,
+            value_learn_rate=value_learn_rate,
+            value_next_learn_factor=value_next_learn_factor,
+            value_action_samples=value_action_samples,
+            value_hallu_loops=value_hallu_loops,
+            policy_learn_rate=policy_learn_rate,
+            policy_action_samples=policy_action_samples,
+            log_level=log_level,
+            state_input_transform=state_input_transform,
+            reward_input_transform=reward_input_transform,
+            action_input_transform=action_input_transform,
+            survive_input_transform=survive_input_transform,
+            action_output_transform=action_output_transform
+        )
+    elif agent_name == 'agent_model_free_stochastic_actor':
+        agent = agent_model_free_stochastic_actor(
+            name=instance_name,
+            value_net=value_net,
+            policy_net=policy_net,
+            tensor_board=tensor_board,
+            batch_size=batch_size,
+            batches=batches,
+            memory_buffer_size=memory_buffer_size,
+            value_learn_rate=value_learn_rate,
+            value_next_learn_factor=value_next_learn_factor,
+            value_action_samples=value_action_samples,
+            policy_learn_rate=policy_learn_rate,
+            policy_action_samples=policy_action_samples,
             log_level=log_level,
             state_input_transform=state_input_transform,
             reward_input_transform=reward_input_transform,
@@ -188,7 +223,10 @@ def Execute(
                 episode_timestep = 1
                 episode_cumulative_reward = 0
                 next_observation_partial = environment.reset()
-                observation_next = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_observation_partial
+                if episode_timestamp:
+                    observation_next = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
+                else:
+                    observation_next = next_observation_partial
                 observation_next_buffer.clear()
                 for i in range(0, state_frames):
                     observation_next_buffer.append(observation_next)
@@ -207,7 +245,10 @@ def Execute(
             scaled_action = (np.array(action) / 2 + 0.5) * (action_space_max - action_space_min) + action_space_min
             next_observation_partial, reward, terminate, info = environment.step(scaled_action)
             survive = 1.0 - terminate
-            observation_next = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1))) if episode_timestamp else next_observation_partial
+            if episode_timestamp:
+                observation_next = np.concatenate((next_observation_partial, np.array(episode_timestep, ndmin=1)))
+            else:
+                observation_next = next_observation_partial
             observation_next_buffer.append(observation_next)
             agent.record(observation_buffer, action, reward, observation_next_buffer, survive)
 

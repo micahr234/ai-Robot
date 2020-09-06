@@ -9,19 +9,26 @@ num_of_states = 6
 state_frames = 3
 num_of_actions = 2
 num_of_latent_states = num_of_states * 2
+action_distributions = 5
 
-latent_fwd_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_states, num_of_latent_states)
+latent_net = torch.nn.Sequential(
+    torch.nn.Linear(num_of_states, 512),
+    torch.nn.ELU(),
+    torch.nn.Linear(512, 256),
+    torch.nn.ELU(),
+    torch.nn.Linear(256, 128),
+    torch.nn.ELU(),
+    torch.nn.Linear(128, num_of_latent_states)
 )
 
 policy_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * state_frames, 512),
     torch.nn.ReLU(),
-    torch.nn.Linear(512, 256),
-    torch.nn.ReLU(),
-    torch.nn.Linear(256, 128),
-    torch.nn.ReLU(),
-    torch.nn.Linear(128, num_of_actions * 2)
+    #torch.nn.Linear(512, 256),
+    #torch.nn.ELU(),
+    #torch.nn.Linear(256, 128),
+    #torch.nn.Tanh(),
+    torch.nn.Linear(512, num_of_actions * 3 * action_distributions)
 )
 
 value_net = torch.nn.Sequential(
@@ -37,31 +44,19 @@ value_net = torch.nn.Sequential(
 model_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
     torch.nn.ReLU(),
-    torch.nn.Linear(512, 256),
-    torch.nn.ReLU(),
-    torch.nn.Linear(256, 128),
-    torch.nn.ReLU(),
-    torch.nn.Linear(128, num_of_latent_states * 2)
+    torch.nn.Linear(512, num_of_latent_states)
 )
 
 reward_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_latent_states * 2 + num_of_actions, 512),
+    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
     torch.nn.ReLU(),
-    torch.nn.Linear(512, 256),
-    torch.nn.ReLU(),
-    torch.nn.Linear(256, 128),
-    torch.nn.ReLU(),
-    torch.nn.Linear(128, 1 * 2)
+    torch.nn.Linear(512, 1)
 )
 
 survive_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_latent_states * 2 + num_of_actions, 512),
+    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
     torch.nn.ReLU(),
-    torch.nn.Linear(512, 256),
-    torch.nn.ReLU(),
-    torch.nn.Linear(256, 128),
-    torch.nn.ReLU(),
-    torch.nn.Linear(128, 1)
+    torch.nn.Linear(512, 1)
 )
 
 def scale(tensor, input_min, input_max):
@@ -72,7 +67,7 @@ def scale(tensor, input_min, input_max):
 
 def state_input_transform(state):
     xform_state = torch.Tensor([state]).contiguous()
-    #xform_state = scale(xform_state, -1.0, 1.0)
+    xform_state = scale(xform_state, torch.tensor([-1.0]*num_of_states), torch.tensor([1.0]*num_of_states))
     return xform_state
 
 def reward_input_transform(reward):
@@ -108,7 +103,7 @@ Execute(
     render=False,
     render_delay=0.0,
 
-    agent_name='agent',
+    agent_name='agent_model_based_stochastic_actor',
     max_timestep=20000,
     learn_interval=500,
     batches=500,
@@ -116,7 +111,7 @@ Execute(
     memory_buffer_size=20000,
     save=False,
 
-    latent_fwd_net=latent_fwd_net,
+    latent_net=latent_net,
     model_net=model_net,
     reward_net=reward_net,
     survive_net=survive_net,
@@ -129,10 +124,12 @@ Execute(
     model_learn_rate=lambda batch: 0.0001,
     reward_learn_rate=lambda batch: 0.0001,
     survive_learn_rate=lambda batch: 0.0001,
-    value_learn_rate=lambda batch: 0.0001,
-    value_next_learn_factor=lambda batch: 0.95,
+    value_learn_rate=lambda batch: 0.001,
+    value_next_learn_factor=lambda batch: 0.98,
+    value_action_samples=8,
+    value_hallu_loops=1,
     policy_learn_rate=lambda batch: 0.0001,
-    policy_learn_noise_std=lambda batch: 0.1,
+    policy_action_samples=32,
 
     profile=False,
     log_level=1
