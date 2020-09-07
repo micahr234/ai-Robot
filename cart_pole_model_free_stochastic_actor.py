@@ -52,8 +52,8 @@ def action_input_transform(action):
     return xform_action
 
 def survive_input_transform(done):
-    xform_reward = torch.Tensor([[float(done)]]).contiguous()
-    return xform_reward
+    xform_survive = torch.Tensor([[float(done)]]).contiguous()
+    return xform_survive
 
 def action_output_transform(action):
     xform_action = action.tolist()
@@ -86,13 +86,16 @@ Execute(
     value_net=value_net,
     policy_net=policy_net,
     state_frames=state_frames,
+    action_distributions=action_distributions,
 
     value_learn_rate=lambda batch: 0.001,
     value_next_learn_factor=lambda batch: 0.98,
     value_action_samples=8,
+    value_discount=1.0,
     policy_learn_rate=lambda batch: 0.0001,
     policy_action_samples=32,
 
     profile=False,
-    log_level=1
+    log_level=1,
+    gpu=None
 )

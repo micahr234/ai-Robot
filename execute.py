@@ -8,8 +8,10 @@ from collections import deque
 
 import torch
 
-from agent_model_based_stochastic_actor import agent_model_based_stochastic_actor
-from agent_model_free_stochastic_actor import agent_model_free_stochastic_actor
+import agent_model_based_stochastic_actor
+import agent_model_based_deterministic_actor
+import agent_model_free_stochastic_actor
+import agent_model_free_deterministic_actor
 
 def Execute(
             instance_name=None,
@@ -41,6 +43,7 @@ def Execute(
             policy_net=None,
             state_frames=None,
             latent_states=None,
+            action_distributions=None,
 
             latent_learn_rate=None,
             model_learn_rate=None,
@@ -49,12 +52,15 @@ def Execute(
             value_learn_rate=None,
             value_next_learn_factor=None,
             value_action_samples=None,
+            value_action_samples_std=None,
             value_hallu_loops=None,
+            value_discount=None,
             policy_learn_rate=None,
             policy_action_samples=None,
 
             profile=None,
-            log_level=None
+            log_level=None,
+            gpu=None
             ):
 
     print('')
@@ -87,6 +93,7 @@ def Execute(
         log_params['survive_net'] = survive_net
         log_params['state_frames'] = state_frames
         log_params['latent_states'] = latent_states
+        log_params['action_distributions'] = action_distributions
 
         log_params['latent_learn_rate'] = latent_learn_rate
         log_params['model_learn_rate'] = model_learn_rate
@@ -95,7 +102,9 @@ def Execute(
         log_params['value_learn_rate'] = value_learn_rate
         log_params['value_next_learn_factor'] = value_next_learn_factor
         log_params['value_action_samples'] = value_action_samples
+        log_params['value_action_samples_std'] = value_action_samples_std
         log_params['value_hallu_loops'] = value_hallu_loops
+        log_params['value_discount'] = value_discount
         log_params['policy_learn_rate'] = policy_learn_rate
         log_params['policy_action_samples'] = policy_action_samples
 
@@ -112,9 +121,10 @@ def Execute(
 
     print('Creating agent: ' + agent_name)
     if agent_name == 'agent_model_based_stochastic_actor':
-        agent = agent_model_based_stochastic_actor(
+        agent = agent_model_based_stochastic_actor.agent(
             name=instance_name,
             latent_states=latent_states,
+            action_distributions=action_distributions,
             latent_net=latent_net,
             value_net=value_net,
             policy_net=policy_net,
@@ -140,10 +150,68 @@ def Execute(
             reward_input_transform=reward_input_transform,
             action_input_transform=action_input_transform,
             survive_input_transform=survive_input_transform,
-            action_output_transform=action_output_transform
+            action_output_transform=action_output_transform,
+            gpu=gpu
+        )
+    elif agent_name == 'agent_model_based_deterministic_actor':
+        agent = agent_model_based_deterministic_actor.agent(
+            name=instance_name,
+            latent_states=latent_states,
+            latent_net=latent_net,
+            value_net=value_net,
+            policy_net=policy_net,
+            model_net=model_net,
+            reward_net=reward_net,
+            survive_net=survive_net,
+            tensor_board=tensor_board,
+            batch_size=batch_size,
+            batches=batches,
+            memory_buffer_size=memory_buffer_size,
+            latent_learn_rate=latent_learn_rate,
+            model_learn_rate=model_learn_rate,
+            reward_learn_rate=reward_learn_rate,
+            survive_learn_rate=survive_learn_rate,
+            value_learn_rate=value_learn_rate,
+            value_next_learn_factor=value_next_learn_factor,
+            value_action_samples=value_action_samples,
+            value_action_samples_std=value_action_samples_std,
+            value_hallu_loops=value_hallu_loops,
+            policy_learn_rate=policy_learn_rate,
+            policy_action_samples=policy_action_samples,
+            log_level=log_level,
+            state_input_transform=state_input_transform,
+            reward_input_transform=reward_input_transform,
+            action_input_transform=action_input_transform,
+            survive_input_transform=survive_input_transform,
+            action_output_transform=action_output_transform,
+            gpu=gpu
         )
     elif agent_name == 'agent_model_free_stochastic_actor':
-        agent = agent_model_free_stochastic_actor(
+        agent = agent_model_free_stochastic_actor.agent(
+            name=instance_name,
+            action_distributions=action_distributions,
+            value_net=value_net,
+            policy_net=policy_net,
+            tensor_board=tensor_board,
+            batch_size=batch_size,
+            batches=batches,
+            memory_buffer_size=memory_buffer_size,
+            value_learn_rate=value_learn_rate,
+            value_next_learn_factor=value_next_learn_factor,
+            value_action_samples=value_action_samples,
+            value_discount=value_discount,
+            policy_learn_rate=policy_learn_rate,
+            policy_action_samples=policy_action_samples,
+            log_level=log_level,
+            state_input_transform=state_input_transform,
+            reward_input_transform=reward_input_transform,
+            action_input_transform=action_input_transform,
+            survive_input_transform=survive_input_transform,
+            action_output_transform=action_output_transform,
+            gpu=gpu
+        )
+    elif agent_name == 'agent_model_free_deterministic_actor':
+        agent = agent_model_free_deterministic_actor.agent(
             name=instance_name,
             value_net=value_net,
             policy_net=policy_net,
@@ -154,14 +222,16 @@ def Execute(
             value_learn_rate=value_learn_rate,
             value_next_learn_factor=value_next_learn_factor,
             value_action_samples=value_action_samples,
+            value_action_samples_std=value_action_samples_std,
+            value_discount=value_discount,
             policy_learn_rate=policy_learn_rate,
-            policy_action_samples=policy_action_samples,
             log_level=log_level,
             state_input_transform=state_input_transform,
             reward_input_transform=reward_input_transform,
             action_input_transform=action_input_transform,
             survive_input_transform=survive_input_transform,
-            action_output_transform=action_output_transform
+            action_output_transform=action_output_transform,
+            gpu=gpu
         )
     else:
         raise ValueError('Agent name in not valid')

@@ -8,55 +8,25 @@ import numpy as np
 num_of_states = 6
 state_frames = 3
 num_of_actions = 2
-num_of_latent_states = num_of_states * 2
-action_distributions = 5
-
-latent_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_states, 512),
-    torch.nn.ELU(),
-    torch.nn.Linear(512, 256),
-    torch.nn.ELU(),
-    torch.nn.Linear(256, 128),
-    torch.nn.ELU(),
-    torch.nn.Linear(128, num_of_latent_states)
-)
 
 policy_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames, 512),
+    torch.nn.Linear(num_of_states * state_frames, 512),
     torch.nn.ReLU(),
     #torch.nn.Linear(512, 256),
     #torch.nn.ELU(),
     #torch.nn.Linear(256, 128),
     #torch.nn.Tanh(),
-    torch.nn.Linear(512, num_of_actions * 3 * action_distributions)
+    torch.nn.Linear(512, num_of_actions)
 )
 
 value_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
+    torch.nn.Linear(num_of_states * state_frames + num_of_actions, 512),
     torch.nn.ReLU(),
     torch.nn.Linear(512, 256),
     torch.nn.ReLU(),
     torch.nn.Linear(256, 128),
     torch.nn.ReLU(),
     torch.nn.Linear(128, 1)
-)
-
-model_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
-    torch.nn.ReLU(),
-    torch.nn.Linear(512, num_of_latent_states)
-)
-
-reward_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
-    torch.nn.ReLU(),
-    torch.nn.Linear(512, 1)
-)
-
-survive_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_latent_states * state_frames + num_of_actions, 512),
-    torch.nn.ReLU(),
-    torch.nn.Linear(512, 1)
 )
 
 def scale(tensor, input_min, input_max):
@@ -79,8 +49,8 @@ def action_input_transform(action):
     return xform_action
 
 def survive_input_transform(done):
-    xform_reward = torch.Tensor([[float(done)]]).contiguous()
-    return xform_reward
+    xform_survive = torch.Tensor([[float(done)]]).contiguous()
+    return xform_survive
 
 def action_output_transform(action):
     xform_action = action.tolist()
@@ -103,7 +73,7 @@ Execute(
     render=False,
     render_delay=0.0,
 
-    agent_name='agent_model_based_stochastic_actor',
+    agent_name='agent_model_free_deterministic_actor',
     max_timestep=20000,
     learn_interval=500,
     batches=500,
@@ -111,26 +81,18 @@ Execute(
     memory_buffer_size=20000,
     save=False,
 
-    latent_net=latent_net,
-    model_net=model_net,
-    reward_net=reward_net,
-    survive_net=survive_net,
     value_net=value_net,
     policy_net=policy_net,
     state_frames=state_frames,
-    latent_states=num_of_latent_states,
 
-    latent_learn_rate=lambda batch: 0.0001,
-    model_learn_rate=lambda batch: 0.0001,
-    reward_learn_rate=lambda batch: 0.0001,
-    survive_learn_rate=lambda batch: 0.0001,
     value_learn_rate=lambda batch: 0.001,
-    value_next_learn_factor=lambda batch: 0.98,
-    value_action_samples=8,
-    value_hallu_loops=1,
+    value_next_learn_factor=lambda batch: 0.8,
+    value_action_samples=6,
+    value_action_samples_std=0.01,
+    value_discount=0.99,
     policy_learn_rate=lambda batch: 0.0001,
-    policy_action_samples=32,
 
     profile=False,
-    log_level=1
+    log_level=1,
+    gpu=None
 )
