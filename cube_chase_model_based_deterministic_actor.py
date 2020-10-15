@@ -1,33 +1,28 @@
 import torch
 import math
+import numpy as np
 from mlagents_envs.environment import UnityEnvironment
 from gym_unity.envs import UnityToGymWrapper
-from execute import Execute
-import numpy as np
+import execute
 
-num_of_states = 6
+num_of_indirect_observations = 0
+num_of_indirect_states = 0
+num_of_direct_observations = 4
+num_of_latent_states = num_of_indirect_states + num_of_direct_observations
 state_frames = 3
 num_of_actions = 2
-num_of_latent_states = num_of_states * 2
 
 latent_net = torch.nn.Sequential(
-    torch.nn.Linear(num_of_states, 512),
-    torch.nn.ELU(),
-    torch.nn.Linear(512, 256),
-    torch.nn.ELU(),
-    torch.nn.Linear(256, 128),
-    torch.nn.ELU(),
-    torch.nn.Linear(128, num_of_latent_states)
 )
 
 policy_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * state_frames, 512),
     torch.nn.ReLU(),
-    #torch.nn.Linear(512, 256),
-    #torch.nn.ELU(),
-    #torch.nn.Linear(256, 128),
-    #torch.nn.Tanh(),
-    torch.nn.Linear(512, num_of_actions)
+    torch.nn.Linear(512, 256),
+    torch.nn.ReLU(),
+    torch.nn.Linear(256, 128),
+    torch.nn.ReLU(),
+    torch.nn.Linear(128, num_of_actions)
 )
 
 value_net = torch.nn.Sequential(
@@ -64,42 +59,42 @@ def scale(tensor, input_min, input_max):
     scaled_tensor = (tensor - intercept) / slope
     return scaled_tensor
 
-def state_input_transform(state):
-    xform_state = torch.Tensor([state]).contiguous()
-    xform_state = scale(xform_state, torch.tensor([-1.0]*num_of_states), torch.tensor([1.0]*num_of_states))
-    return xform_state
+def observation_input_transform(state):
+    state_direct_xform = torch.FloatTensor(state[0]).contiguous()
+    state_indirect_xform = torch.FloatTensor([])
+    state_indirect_target_xform = torch.FloatTensor([])
+    return state_direct_xform, state_indirect_xform, state_indirect_target_xform
 
 def reward_input_transform(reward):
-    xform_reward = torch.Tensor([[reward]]).contiguous()
-    return xform_reward
+    reward_xform = torch.FloatTensor([reward]).contiguous()
+    return reward_xform
 
 def action_input_transform(action):
-    xform_action = torch.Tensor([action]).contiguous()
-    return xform_action
+    action_xform = torch.FloatTensor(action).contiguous()
+    return action_xform
 
 def survive_input_transform(done):
-    xform_survive = torch.Tensor([[float(done)]]).contiguous()
-    return xform_survive
+    survive_xform = torch.FloatTensor([float(done)]).contiguous()
+    return survive_xform
 
 def action_output_transform(action):
-    xform_action = action.tolist()
-    return xform_action
+    action_xform = [action.tolist()]
+    return action_xform
 
-unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', base_port=10000 + np.random.randint(1000), seed=1, no_graphics=False, side_channels=[])
-gym_env = UnityToGymWrapper(unity_env, False, False, False, False)
+unity_env = UnityEnvironment('environments/CubeChase/CubeChase.exe', base_port=10000, worker_id=np.random.randint(1000), no_graphics=True)
+gym_env = UnityToGymWrapper(unity_env, False, False, True)
 
-Execute(
+execute.execute(
     instance_name='CubeChase1',
 
     environment_name='CubeChase',
     environment=gym_env,
-    state_input_transform=state_input_transform,
+    observation_input_transform=observation_input_transform,
     reward_input_transform=reward_input_transform,
     action_input_transform=action_input_transform,
     survive_input_transform=survive_input_transform,
     action_output_transform=action_output_transform,
-    episode_timestamp=False,
-    render=False,
+    max_episode_timestamp=None,
     render_delay=0.0,
 
     agent_name='agent_model_based_deterministic_actor',
@@ -118,20 +113,21 @@ Execute(
     policy_net=policy_net,
     state_frames=state_frames,
     latent_states=num_of_latent_states,
+    action_random_prob=lambda i: 0.5 * (i < 2000),
 
-    latent_learn_rate=lambda batch: 0.0001,
-    model_learn_rate=lambda batch: 0.0001,
-    reward_learn_rate=lambda batch: 0.0001,
-    survive_learn_rate=lambda batch: 0.0001,
-    value_learn_rate=lambda batch: 0.001,
-    value_next_learn_factor=lambda batch: 0.98,
-    value_action_samples=8,
-    value_action_samples_std=0.01,
+    latent_learn_rate=lambda i: 0.0001,
+    model_learn_rate=lambda i: 0.0001,
+    reward_learn_rate=lambda i: 0.0001,
+    survive_learn_rate=lambda i: 0.0001,
+    value_learn_rate=lambda i: 0.0001,
     value_hallu_loops=1,
-    policy_learn_rate=lambda batch: 0.0001,
-    policy_action_samples=32,
+    value_polyak=0.0025,
+    policy_learn_rate=lambda i: 0.0001,
+    policy_polyak=1.0,
 
     profile=False,
     log_level=1,
     gpu=None
 )
+
+gym_env.close()

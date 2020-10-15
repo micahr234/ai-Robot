@@ -1,35 +1,72 @@
 import torch
 import math
+import numpy as np
 from mlagents_envs.environment import UnityEnvironment
 from gym_unity.envs import UnityToGymWrapper
-from execute import Execute
-import numpy as np
+import execute
 
-num_of_states = 1
+num_of_indirect_observations = 1
+num_of_indirect_states = 4
+num_of_direct_observations = 1
+num_of_latent_states = num_of_indirect_states + num_of_direct_observations
 state_frames = 3
 num_of_actions = 2
-num_of_latent_states = 6
 
-latent_net = torch.nn.Sequential(
-    torch.nn.Conv2d(num_of_states, 32, kernel_size=(4, 4), stride=(2, 2)),
-    torch.nn.ELU(),
-    torch.nn.Conv2d(32, 64, kernel_size=(4, 4), stride=(2, 2)),
-    torch.nn.ELU(),
-    torch.nn.Conv2d(64, 128, kernel_size=(4, 4), stride=(2, 2)),
-    torch.nn.ELU(),
-    torch.nn.Conv2d(128, 256, kernel_size=(4, 4), stride=(2, 2)),
-    torch.nn.ELU(),
-    torch.nn.Flatten(),
-    torch.nn.Linear(2304, num_of_latent_states)
-)
+
+class pixel_to_pos(torch.nn.Module):
+
+    def __init__(self):
+
+        super(pixel_to_pos, self).__init__()
+
+        self.conv11 = torch.nn.Conv2d(num_of_indirect_observations, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv12 = torch.nn.Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+
+        self.conv21 = torch.nn.Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv22 = torch.nn.Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.drop23 = torch.nn.Dropout2d(p=0.2)
+
+        self.conv31 = torch.nn.Conv2d(32, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv32 = torch.nn.Conv2d(16, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv33 = torch.nn.Conv2d(16, num_of_indirect_states, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+
+        self.conv42 = torch.nn.Conv2d(num_of_indirect_states, num_of_indirect_states, kernel_size=(84, 84), stride=(1, 1), padding=(0, 0), groups=num_of_indirect_states)
+        self.flat43 = torch.nn.Flatten()
+
+        self.debug_img = None
+
+    def forward(self, img):
+
+        x = self.conv11(img)
+        x = torch.nn.functional.elu(x)
+        x = self.conv12(x)
+        x = torch.nn.functional.elu(x)
+
+        x = self.conv21(x)
+        x = torch.nn.functional.elu(x)
+        x = self.conv22(x)
+        x = torch.nn.functional.elu(x)
+        x = self.drop23(x)
+
+        x = self.conv31(x)
+        x = torch.nn.functional.elu(x)
+        x = self.conv32(x)
+        x = torch.nn.functional.elu(x)
+        x = self.conv33(x)
+        x = torch.nn.functional.elu(x)
+
+        y = self.conv42(x)
+        output = self.flat43(y)
+
+        self.debug_img = x.clone()
+
+        return output
+
+latent_net = pixel_to_pos()
 
 policy_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_latent_states * state_frames, 512),
     torch.nn.ReLU(),
-    #torch.nn.Linear(512, 256),
-    #torch.nn.ELU(),
-    #torch.nn.Linear(256, 128),
-    #torch.nn.Tanh(),
     torch.nn.Linear(512, num_of_actions)
 )
 
@@ -67,45 +104,52 @@ def scale(tensor, input_min, input_max):
     scaled_tensor = (tensor - intercept) / slope
     return scaled_tensor
 
-def state_input_transform(state):
-    xform_state = torch.FloatTensor(state).permute(1, 0, 4, 2, 3).contiguous()
-    xform_state = scale(xform_state, 0.0, 1.0)
-    return xform_state
+def observation_input_transform(state):
+    state_direct_xform = torch.FloatTensor([])
+    state_indirect_xform = torch.FloatTensor(state[0]).permute(2, 0, 1).contiguous()
+    state_indirect_target_xform = torch.FloatTensor(state[1]).contiguous()
+    #state_indirect_target_xform = torch.zeros_like(state_indirect_xform).repeat([2, 1, 1])
+    #x = -int(torch.clamp(state_indirect_temp[1] * 6.0 + 42.0, min=0, max=83))
+    #y = int(torch.clamp(state_indirect_temp[0] * 6.0 + 42.0, min=0, max=83))
+    #state_indirect_target_xform[0, x, y] = 1.0
+    #x = -int(torch.clamp(state_indirect_temp[3] * 6.0 + 42.0, min=0, max=83))
+    #y = int(torch.clamp(state_indirect_temp[2] * 6.0 + 42.0, min=0, max=83))
+    #state_indirect_target_xform[1, x, y] = 1.0
+    return state_direct_xform, state_indirect_xform, state_indirect_target_xform
 
 def reward_input_transform(reward):
-    xform_reward = torch.FloatTensor([[reward]]).contiguous()
-    return xform_reward
+    reward_xform = torch.FloatTensor([reward]).contiguous()
+    return reward_xform
 
 def action_input_transform(action):
-    xform_action = torch.FloatTensor(action).contiguous()
-    return xform_action
+    action_xform = torch.FloatTensor(action).contiguous()
+    return action_xform
 
 def survive_input_transform(done):
-    xform_survive = torch.Tensor([[float(done)]]).contiguous()
-    return xform_survive
+    survive_xform = torch.FloatTensor([float(done)]).contiguous()
+    return survive_xform
 
 def action_output_transform(action):
-    xform_action = [action.tolist()]
-    return xform_action
+    action_xform = [action.tolist()]
+    return action_xform
 
-unity_env = UnityEnvironment('./environments/CubeChaseVisual/CubeChase.exe', base_port=10000 + np.random.randint(1000), seed=1, no_graphics=False, side_channels=[])
-gym_env = UnityToGymWrapper(unity_env, True, False, False, True)
+unity_env = UnityEnvironment('environments/CubeChaseVisual/CubeChase.exe', base_port=10000, worker_id=np.random.randint(1000), no_graphics=False)
+gym_env = UnityToGymWrapper(unity_env, False, False, True)
 
-Execute(
+execute.execute(
     instance_name='CubeChaseVisual1',
 
     environment_name='CubeChaseVisual',
     environment=gym_env,
-    state_input_transform=state_input_transform,
+    observation_input_transform=observation_input_transform,
     reward_input_transform=reward_input_transform,
     action_input_transform=action_input_transform,
     survive_input_transform=survive_input_transform,
     action_output_transform=action_output_transform,
-    episode_timestamp=False,
-    render=False,
+    max_episode_timestamp=200,
     render_delay=0.0,
 
-    agent_name='agent_model_based_deterministic_actor',
+    agent_name='agent_image_test',
     max_timestep=20000,
     learn_interval=500,
     batches=500,
@@ -121,20 +165,20 @@ Execute(
     policy_net=policy_net,
     state_frames=state_frames,
     latent_states=num_of_latent_states,
+    action_random_prob=lambda i: 0.5 * (i < 5000),
 
-    latent_learn_rate=lambda batch: 0.0001,
-    model_learn_rate=lambda batch: 0.0001,
-    reward_learn_rate=lambda batch: 0.0001,
-    survive_learn_rate=lambda batch: 0.0001,
-    value_learn_rate=lambda batch: 0.001,
-    value_next_learn_factor=lambda batch: 0.98,
-    value_action_samples=8,
-    value_action_samples_std=0.01,
+    latent_learn_rate=lambda i: 0.0001,#0.0001
+    model_learn_rate=lambda i: 0.0001,
+    reward_learn_rate=lambda i: 0.0001,
+    survive_learn_rate=lambda i: 0.0001,
+    value_learn_rate=lambda i: 0.001,
+    value_next_learn_factor=lambda i: 0.8,
     value_hallu_loops=1,
-    policy_learn_rate=lambda batch: 0.0001,
-    policy_action_samples=32,
+    policy_learn_rate=lambda i: 0.0001,
 
     profile=False,
     log_level=1,
-    gpu=0
+    gpu=None
 )
+
+gym_env.close()

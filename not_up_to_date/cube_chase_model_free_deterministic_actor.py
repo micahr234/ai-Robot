@@ -12,10 +12,6 @@ num_of_actions = 2
 policy_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_states * state_frames, 512),
     torch.nn.ReLU(),
-    #torch.nn.Linear(512, 256),
-    #torch.nn.ELU(),
-    #torch.nn.Linear(256, 128),
-    #torch.nn.Tanh(),
     torch.nn.Linear(512, num_of_actions)
 )
 
@@ -36,7 +32,7 @@ def scale(tensor, input_min, input_max):
     return scaled_tensor
 
 def state_input_transform(state):
-    xform_state = torch.Tensor([state]).contiguous()
+    xform_state = torch.Tensor([state]).squeeze(2).contiguous()
     xform_state = scale(xform_state, torch.tensor([-1.0]*num_of_states), torch.tensor([1.0]*num_of_states))
     return xform_state
 
@@ -57,7 +53,7 @@ def action_output_transform(action):
     return xform_action
 
 unity_env = UnityEnvironment('./environments/CubeChase/CubeChase.exe', base_port=10000 + np.random.randint(1000), seed=1, no_graphics=False, side_channels=[])
-gym_env = UnityToGymWrapper(unity_env, False, False, False, False)
+gym_env = UnityToGymWrapper(unity_env, False, False, True)
 
 Execute(
     instance_name='CubeChase1',
@@ -84,11 +80,10 @@ Execute(
     value_net=value_net,
     policy_net=policy_net,
     state_frames=state_frames,
+    action_random_prob=lambda action: 0.9996**action,
 
     value_learn_rate=lambda batch: 0.001,
     value_next_learn_factor=lambda batch: 0.8,
-    value_action_samples=6,
-    value_action_samples_std=0.01,
     value_discount=0.99,
     policy_learn_rate=lambda batch: 0.0001,
 
