@@ -81,7 +81,7 @@ def action_output_transform(action):
     action_xform = [action.tolist()]
     return action_xform
 
-unity_env = UnityEnvironment('environments/CubeChase/CubeChase.exe', base_port=10000, worker_id=np.random.randint(1000), no_graphics=True)
+unity_env = UnityEnvironment('environments/CubeChase/CubeChase.exe', base_port=10000, worker_id=np.random.randint(1000), no_graphics=False)
 gym_env = UnityToGymWrapper(unity_env, False, False, True)
 
 execute.execute(
@@ -123,7 +123,7 @@ execute.execute(
     value_hallu_loops=1,
     value_polyak=0.0025,
     policy_learn_rate=lambda i: 0.0001,
-    policy_polyak=1.0,
+    policy_polyak=0.00025,
 
     profile=False,
     log_level=1,

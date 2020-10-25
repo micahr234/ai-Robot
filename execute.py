@@ -8,7 +8,7 @@ from collections import deque
 
 import torch
 
-#import agent_model_based_stochastic_actor
+import agent_model_based_stochastic_actor
 import agent_model_based_deterministic_actor
 #import agent_model_free_stochastic_actor
 #import agent_model_free_deterministic_actor
@@ -44,23 +44,23 @@ def execute(
         survive_net=None,
         value_net=None,
         policy_net=None,
+        policy_mix_net=None,
         state_frames=None,
         latent_states=None,
         action_distributions=None,
         action_random_prob=None,
 
         latent_learn_rate=None,
+        latent_polyak=None,
         model_learn_rate=None,
         reward_learn_rate=None,
         survive_learn_rate=None,
+        env_polyak=None,
         value_learn_rate=None,
-        value_action_samples=None,
-        value_action_samples_std=None,
         value_hallu_loops=None,
         value_discount=None,
         value_polyak=None,
         policy_learn_rate=None,
-        policy_action_samples=None,
         policy_polyak=None,
 
         profile=None,
@@ -93,6 +93,7 @@ def execute(
         log_params['latent_net'] = latent_net
         log_params['value_net'] = value_net
         log_params['policy_net'] = policy_net
+        log_params['policy_mix_net'] = policy_mix_net
         log_params['model_net'] = policy_net
         log_params['reward_net'] = reward_net
         log_params['survive_net'] = survive_net
@@ -102,17 +103,16 @@ def execute(
         log_params['action_random_prob'] = action_random_prob
 
         log_params['latent_learn_rate'] = latent_learn_rate
+        log_params['policy_polyak'] = policy_polyak
         log_params['model_learn_rate'] = model_learn_rate
         log_params['reward_learn_rate'] = reward_learn_rate
         log_params['survive_learn_rate'] = survive_learn_rate
+        log_params['env_polyak'] = env_polyak
         log_params['value_learn_rate'] = value_learn_rate
-        log_params['value_action_samples'] = value_action_samples
-        log_params['value_action_samples_std'] = value_action_samples_std
         log_params['value_hallu_loops'] = value_hallu_loops
         log_params['value_discount'] = value_discount
         log_params['value_polyak'] = value_polyak
         log_params['policy_learn_rate'] = policy_learn_rate
-        log_params['policy_action_samples'] = policy_action_samples
         log_params['policy_polyak'] = policy_polyak
 
         tensor_board.add_text('Hyper Params', str(log_params), 0)
@@ -135,6 +135,7 @@ def execute(
             latent_net=latent_net,
             value_net=value_net,
             policy_net=policy_net,
+            policy_mix_net=policy_mix_net,
             model_net=model_net,
             reward_net=reward_net,
             survive_net=survive_net,
@@ -143,15 +144,15 @@ def execute(
             batches=batches,
             memory_buffer_size=memory_buffer_size,
             latent_learn_rate=latent_learn_rate,
+            latent_polyak=latent_polyak,
             model_learn_rate=model_learn_rate,
             reward_learn_rate=reward_learn_rate,
             survive_learn_rate=survive_learn_rate,
+            env_polyak=env_polyak,
             value_learn_rate=value_learn_rate,
-            value_action_samples=value_action_samples,
             value_hallu_loops=value_hallu_loops,
             value_polyak=value_polyak,
             policy_learn_rate=policy_learn_rate,
-            policy_action_samples=policy_action_samples,
             policy_polyak=policy_polyak,
             log_level=log_level,
             gpu=gpu
@@ -179,7 +180,6 @@ def execute(
             value_hallu_loops=value_hallu_loops,
             value_polyak=value_polyak,
             policy_learn_rate=policy_learn_rate,
-            policy_action_samples=policy_action_samples,
             policy_polyak=policy_polyak,
             log_level=log_level,
             gpu=gpu

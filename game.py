@@ -142,6 +142,7 @@ class game():
         self.observation_next_indirect_buffer = observation_next_indirect.unsqueeze(0).repeat([self.state_frames] + [1]*len(observation_next_indirect.shape))
         self.observation_next_indirect_target_buffer = observation_next_indirect_target.unsqueeze(0).repeat([self.state_frames] + [1]*len(observation_next_indirect_target.shape))
 
+        self.environment.render()
 
     def step(self):
 
@@ -197,6 +198,8 @@ class game():
             self.log_action_buffer.append(action)
             self.log_reward_buffer.append(reward)
             self.log_survive_buffer.append(survive)
+
+        self.environment.render()
 
         self.reset_flag = False if survive == 1.0 else True
 

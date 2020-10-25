@@ -13,6 +13,7 @@ class agent():
             self,
             name,
             latent_states,
+            action_distributions,
 
             latent_net,
             model_net,
@@ -23,16 +24,16 @@ class agent():
 
             tensor_board,
 
-            action_random_prob,
-
             latent_learn_rate,
             model_learn_rate,
             reward_learn_rate,
             survive_learn_rate,
             value_learn_rate,
+            value_action_samples,
             value_hallu_loops,
             value_polyak,
             policy_learn_rate,
+            policy_action_samples,
             policy_polyak,
 
             batches,
@@ -44,6 +45,7 @@ class agent():
 
         self.name = str(name)
         self.latent_states = latent_states
+        self.action_distributions = action_distributions
         self.latent_net_structure = latent_net
         self.value_net_structure = value_net
         self.policy_net_structure = policy_net
@@ -55,11 +57,12 @@ class agent():
         self.memory_buffer_size = memory_buffer_size
         self.batch_size = batch_size
         self.log_level = log_level
-        self.action_random_prob = action_random_prob
         self.latent_learn_rate = latent_learn_rate
         self.latent_polyak = 0.0025
         self.policy_learn_rate = policy_learn_rate
+        self.policy_action_samples = policy_action_samples
         self.value_learn_rate = value_learn_rate
+        self.value_action_samples = value_action_samples
         self.value_hallu_loops = value_hallu_loops
         self.model_learn_rate = model_learn_rate
         self.reward_learn_rate = reward_learn_rate
@@ -124,12 +127,7 @@ class agent():
             observation_indirect.to(self.act_device)
 
             state_latent = self.latent_net_action_copy.forward_multi(observation_direct, observation_indirect)
-            action_temp = self.policy_net_action_copy(state_latent)
-
-            if torch.rand(()) > self.action_random_prob(self.action_count):
-                action = action_temp
-            else:
-                action = torch.rand_like(action_temp) * 2 - 1
+            action = self.policy_net_action_copy(state_latent)
 
         self.action_count += 1
 
@@ -296,20 +294,23 @@ class agent():
                     state_latent_hallu = state_latent
                     action_hallu = action
                     state_next_latent_hallu, reward_hallu, survive_prob_hallu = (state_next_latent, reward, survive)
-                    action_next_hallu = self.policy_target_net(state_next_latent_hallu)
+                    #state_next_latent_lastframe_hallu, reward_hallu, survive_hallu = self.env_net(state_latent_hallu, action_hallu)
+                    #state_next_latent_hallu = self.env_net.state_cat_nextframe(state_latent_hallu, state_next_latent_lastframe_hallu)
+                    #survive_prob_hallu = torch.sigmoid(survive_hallu)
 
                 else:
-                    state_latent_hallu = state_next_latent_hallu
-                    action_hallu = action_next_hallu
+                    state_latent_hallu = state_next_latent_hallu.unsqueeze(0).repeat(self.value_action_samples, 1, 1, 1).flatten(start_dim=0, end_dim=1)
+                    action_hallu = action_next_hallu.flatten(start_dim=0, end_dim=1)
                     state_next_latent_lastframe_hallu, reward_hallu, survive_hallu = self.env_net(state_latent_hallu, action_hallu)
                     state_next_latent_hallu = self.env_net.state_cat_nextframe(state_latent_hallu, state_next_latent_lastframe_hallu)
                     survive_prob_hallu = torch.sigmoid(survive_hallu)
-                    action_next_hallu = self.policy_target_net(state_next_latent_hallu)
+
+                action_next_hallu = self.policy_target_net(state_next_latent_hallu, samples=self.value_action_samples)
 
             value_hallu = self.value_net(state_latent_hallu, action_hallu)
 
             with torch.no_grad():
-                value_next_target_hallu = self.value_target_net(state_next_latent_hallu, action_next_hallu)
+                value_next_target_hallu = torch.mean(self.value_target_net.forward_multi_action(state_next_latent_hallu, action_next_hallu), dim=0)
                 value_target_hallu = reward_hallu + value_next_target_hallu * survive_prob_hallu * 0.99
 
             # optimize value
@@ -346,12 +347,17 @@ class agent():
         self.policy_net.train()
 
         # policy forward pass
-        action = self.policy_net(state_latent)
-        value = self.value_net(state_latent, action)
+        action, action_mix_log_prob, action_mix_entropy = self.policy_net(state_latent, samples=self.policy_action_samples, return_log_prob=True)
+        value = self.value_net.forward_multi_action(state_latent, action)
 
         # optimize policy
         self.policy_optimizer.zero_grad()
-        policy_loss = -torch.mean(value)
+        action_value_loss = -torch.mean(value)
+        action_diversity_loss = -torch.mean(torch.log(torch.var(action, dim=0))) * 0.01
+        mix_loss = -torch.mean(action_mix_log_prob * value.detach())
+        mix_diversity_loss = -torch.mean(action_mix_entropy)
+        #policy_loss = action_value_loss + action_diversity_loss + mix_loss + mix_diversity_loss
+        policy_loss = action_value_loss + action_diversity_loss
         policy_loss.backward()
         self.policy_optimizer.step()
 
@@ -363,7 +369,10 @@ class agent():
 
         # log policy results
         if self.log_level >= 1:
-            self.tensor_board.add_scalar('learn_policy/loss', policy_loss.item(), self.learn_count)
+            self.tensor_board.add_scalar('learn_policy/action_value_loss', action_value_loss.item(), self.learn_count)
+            self.tensor_board.add_scalar('learn_policy/action_diversity_loss', action_diversity_loss.item(), self.learn_count)
+            self.tensor_board.add_scalar('learn_policy/mix_loss', mix_loss.item(), self.learn_count)
+            self.tensor_board.add_scalar('learn_policy/mix_diversity_loss', mix_diversity_loss.item(), self.learn_count)
 
         # log policy learn rates
         if self.log_level >= 2:
@@ -529,6 +538,30 @@ class agent():
 
                 return y
 
+            def forward_multi_action(self, state, multi_action):
+
+                multi_count = multi_action.shape[0]
+                multi_state = state.unsqueeze(0).repeat(multi_count, 1, 1, 1)
+
+                multi_state_shape = list(multi_state.shape)
+                del multi_state_shape[0]
+                multi_state_shape[0] = -1
+                multi_state = multi_state.view(multi_state_shape)
+
+                multi_action_shape = list(multi_action.shape)
+                del multi_action_shape[0]
+                multi_action_shape[0] = -1
+                multi_action = multi_action.view(multi_action_shape)
+
+                multi_value = self.forward(multi_state, multi_action)
+
+                multi_value_shape = list(multi_value.shape)
+                multi_value_shape[0] = -1
+                multi_value_shape.insert(0, multi_count)
+                multi_value = multi_value.view(multi_value_shape)
+
+                return multi_value
+
         self.value_net = Value_Net(self.value_net_structure).to(self.train_device)
 
         if self.value_filename.is_file():
@@ -549,23 +582,69 @@ class agent():
 
         class Policy_Net(torch.nn.Module):
 
-            def __init__(self, net):
+            def __init__(self, net, action_distributions):
 
                 super().__init__()
                 self.net = net
+                self.action_distributions = action_distributions
 
-            def forward(self, state):
+            def distribution(self, state):
 
                 y = self.net(state.flatten(start_dim=1))
 
                 if torch.isnan(y).sum() > 0:
                     raise ValueError('Nan values in actions')
 
-                action = torch.tanh(y)
+                shape = list(y.shape)
+                del shape[-1]
+                shape = shape + [-1, self.action_distributions, 3]
+                yr = y.reshape(shape)
 
-                return action
+                ##action_mean = torch.tanh(yr[:, :, :, 0]) * 1.1
+                action_mean = torch.clamp(yr[:, :, :, 0], -1.1, 1.1)
+                action_sigma = torch.nn.functional.softplus(yr[:, :, :, 1])
+                action_base_dist = torch.distributions.normal.Normal(action_mean, action_sigma)
+                transforms = torch.distributions.transforms.TanhTransform(cache_size=1)
+                action_comp_dist = torch.distributions.transformed_distribution.TransformedDistribution(action_base_dist, transforms)
 
-        self.policy_net = Policy_Net(self.policy_net_structure).to(self.train_device)
+                #action_beta0 = torch.nn.functional.softplus(yr[:, :, :, 0])
+                #action_beta1 = torch.nn.functional.softplus(yr[:, :, :, 1])
+                #action_beta0 = torch.clamp(yr[:, :, :, 0], 0.1, 1000)
+                #action_beta1 = torch.clamp(yr[:, :, :, 1], 0.1, 1000)
+                #action_base_dist = torch.distributions.beta.Beta(action_beta1, action_beta0)
+                #transforms = torch.distributions.transforms.AffineTransform(-1.0, 2.0, cache_size=0)
+                #action_comp_dist = torch.distributions.transformed_distribution.TransformedDistribution(action_base_dist, transforms)
+
+                action_mix = yr[:, [0], :, 2]
+                action_mix_dist = torch.distributions.categorical.Categorical(logits=action_mix)
+
+                return action_comp_dist, action_mix_dist
+
+            def forward(self, state, samples=None, return_log_prob=False):
+
+                action_comp_dist, action_mix_dist = self.distribution(state)
+
+                samples_actual = 1 if samples is None else samples
+
+                action_mix = action_mix_dist.sample([samples_actual])
+                action_comp = action_comp_dist.rsample([samples_actual])
+
+                num_of_actions = action_comp.shape[2]
+                action_mix_reshaped = action_mix.repeat(1, 1, num_of_actions).unsqueeze(-1)
+
+                action = torch.gather(action_comp, -1, action_mix_reshaped).squeeze(-1)
+
+                action = action.squeeze(0) if samples is None else action
+
+                if return_log_prob == False:
+                    return action
+                else:
+                    action_mix_log_prob = action_mix_dist.log_prob(action_mix)
+                    action_mix_entropy = action_mix_dist.entropy()
+                    action_choices = action_comp_dist.base_dist.mean
+                    return action, action_choices, action_mix_log_prob, action_mix_entropy
+
+        self.policy_net = Policy_Net(self.policy_net_structure, self.action_distributions).to(self.train_device)
 
         if self.policy_filename.is_file():
             # Load policy network

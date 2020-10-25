@@ -172,7 +172,6 @@ execute.execute(
     reward_learn_rate=lambda i: 0.0001,
     survive_learn_rate=lambda i: 0.0001,
     value_learn_rate=lambda i: 0.001,
-    value_next_learn_factor=lambda i: 0.8,
     value_hallu_loops=1,
     policy_learn_rate=lambda i: 0.0001,
 
