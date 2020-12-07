@@ -1,9 +1,15 @@
-from tensorboard import program
 from pathlib import Path
+import torch
+from torch.utils.tensorboard import SummaryWriter
+import time
 
-memory_dir = Path.cwd() / 'runs'
-tb = program.TensorBoard()
-tb.configure(argv=[None, '--logdir', str(memory_dir), '--samples_per_plugin', 'scalars=10000'])
-url = tb.launch()
-print('TensorBoard at ' + url)
-input("Press Enter to quit...")
+
+class tensor_board(torch.utils.tensorboard.SummaryWriter):
+
+    def __init__(self, name):
+
+        print('')
+        tensor_board_dir = Path.cwd() / 'runs' / name / str(time.time())
+        print('Creating Tensor Board')
+        print('Log File: ' + str(tensor_board_dir))
+        super().__init__(tensor_board_dir, max_queue=10000, flush_secs=60)

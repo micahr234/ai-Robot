@@ -5,42 +5,51 @@ from pathlib import Path
 from collections import deque
 import torch
 import memory
+import cProfile
+import os
 
 
 class game():
 
     def __init__(self,
-                 name,
-                 environment,
-                 agent,
-                 tensor_board,
-                 log_level,
-                 state_frames,
-                 learn_interval,
-                 max_timestep,
-                 memory_buffer_size,
-                 max_episode_timestamp,
-                 render_delay,
-                 save,
-                 observation_input_transform,
-                 action_input_transform,
-                 reward_input_transform,
-                 survive_input_transform,
-                 action_output_transform,
-                 ):
+            name,
+            environment,
+            agent,
+            tensor_board,
+            state_frames,
+            learn_interval,
+            max_timestep,
+            memory_buffer_size,
+            max_episode_timestamp,
+            batch_size,
+            batches,
+            render_delay,
+            save,
+            profile,
+            observation_input_transform,
+            action_input_transform,
+            reward_input_transform,
+            survive_input_transform,
+            action_output_transform,
+            ):
+
+        print('')
+        print('Creating Game')
 
         self.name = name
         self.environment = environment
         self.agent = agent
         self.tensor_board = tensor_board
-        self.log_level = log_level
         self.state_frames = state_frames
         self.learn_interval = learn_interval
         self.max_timestep = max_timestep
         self.memory_buffer_size = memory_buffer_size
         self.max_episode_timestamp = max_episode_timestamp
+        self.batch_size = batch_size
+        self.batches = batches
         self.render_delay = render_delay
         self.save = save
+        self.profile = profile
 
         self.observation_input_transform = observation_input_transform
         self.action_input_transform = action_input_transform
@@ -74,6 +83,13 @@ class game():
 
     def run(self):
 
+        print('')
+        print('Starting Game')
+
+        if self.profile:
+            pr = cProfile.Profile()
+            pr.enable()
+
         self.learnstep = 1
 
         for t in range(1, self.max_timestep + 1):
@@ -96,14 +112,11 @@ class game():
 
             if self.reset_flag:
 
-                print('---Terminated episode---\t\t\t\tEpisode timestep: ' + str(self.episode_timestep) +
+                print('---Episode Complete---\t\t\t\tEpisode timestep: ' + str(self.episode_timestep) +
                       '\t\t\t\tCumulative reward: ' + str(self.episode_cumulative_reward))
 
-                if self.log_level >= 1:
-                    self.log_reward()
-
-                if self.log_level >= 3:
-                    self.log_values()
+                self.log_reward()
+                #self.log_values()
 
             self.learn_flag = (self.timestep / self.learn_interval) >= self.learnstep
 
@@ -111,7 +124,12 @@ class game():
 
                 self.learnstep += 1
                 data = self.memory.get_all()
-                self.agent.learn(data)
+                self.agent.learn(data, self.batch_size, self.batches)
+
+                data_length = data['survive'].shape[0]
+                print('***Learing Complete***\t\t\t\tSamples: ' + str(data_length) +
+                      '\t\t\t\tBatch Size: ' + str(self.batch_size) +
+                      '\t\t\t\tNumber Of Batches: ' + str(self.batches))
 
                 if self.save:
 
@@ -122,6 +140,15 @@ class game():
 
             self.agent.save()
             self.memory.save()
+
+        if self.profile:
+            pr.disable()
+            profile_dir = Path.cwd() / 'profile' / self.name
+            Path(profile_dir).mkdir(parents=True, exist_ok=True)
+            profile_filename = profile_dir / 'profile.pt'
+            pr.dump_stats(profile_filename)
+            print('Follow the link below to see the time profile')
+            os.system("snakeviz " + str(profile_filename))
 
 
     def reset(self):
@@ -152,7 +179,7 @@ class game():
         observation_indirect_buffer = self.observation_next_indirect_buffer.clone()
         observation_indirect_target_buffer = self.observation_next_indirect_target_buffer.clone()
 
-        action = self.agent.act(observation_direct_buffer.unsqueeze(0), observation_indirect_buffer.unsqueeze(0)).squeeze(0)
+        action = self.agent.act(observation_direct=observation_direct_buffer.unsqueeze(0), observation_indirect=observation_indirect_buffer.unsqueeze(0)).squeeze(0)
         action.to(self.device)
 
         action_limited = torch.clamp(action, -1.0, 1.0)
@@ -190,14 +217,12 @@ class game():
             survive=survive
         )
 
-        if self.log_level >= 3:
-
-            self.log_observation_direct_buffer.append(observation_direct_buffer[0])
-            self.log_observation_indirect_buffer.append(observation_indirect_buffer[0])
-            self.log_observation_indirect_target_buffer.append(observation_indirect_target_buffer[0])
-            self.log_action_buffer.append(action)
-            self.log_reward_buffer.append(reward)
-            self.log_survive_buffer.append(survive)
+        #self.log_observation_direct_buffer.append(observation_direct_buffer[0])
+        #self.log_observation_indirect_buffer.append(observation_indirect_buffer[0])
+        #self.log_observation_indirect_target_buffer.append(observation_indirect_target_buffer[0])
+        #self.log_action_buffer.append(action)
+        #self.log_reward_buffer.append(reward)
+        #self.log_survive_buffer.append(survive)
 
         self.environment.render()
 

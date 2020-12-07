@@ -8,12 +8,6 @@ from collections import deque
 
 import torch
 
-import agent_model_based_stochastic_actor
-import agent_model_based_deterministic_actor
-#import agent_model_free_stochastic_actor
-#import agent_model_free_deterministic_actor
-import agent_image_test
-
 import game
 
 

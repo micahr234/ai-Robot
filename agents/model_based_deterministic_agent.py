@@ -240,14 +240,13 @@ class agent():
 
         # Calculate intrinsic reward
         with torch.no_grad():
-            # state_next_latent_prediction_slow, reward_prediction_slow, survive_prediction_slow_dist = self.env_net_slow_copy(state_latent, action)
-            # model_novelty = torch.mean(norm(abs(state_next_latent_prediction_slow[:, -1, :] - state_next_latent_prediction[:, -1, :]), dim=0), dim=-1, keepdim=True)
+            state_next_latent_lastframe_prediction_slow, reward_prediction_slow, survive_prediction_slow = self.env_target_net(state_latent, action)
+            env_novelty = torch.mean(abs(state_next_latent_lastframe_prediction_slow - state_next_latent_lastframe_prediction), dim=-1)
             # survive_novelty = norm(abs(survive_prediction_slow - survive_prediction), dim=0)
             # reward_novelty = norm(abs(reward_prediction_slow - reward_prediction), dim=0)
             # reward_norm = norm(reward, dim=0)
             # reward_total = reward_norm + survive * 0.01 + survive_novelty * 0.01 + model_novelty * 0.01 + reward_novelty * 0.01
-            # reward_total = reward - (1.0 - survive) * 10
-            reward_total = reward
+            reward_total = reward + env_novelty * 1.0
 
         # optimize env
         self.env_optimizer.zero_grad()
@@ -280,12 +279,24 @@ class agent():
     def learn_value(self, state_latent, action, state_next_latent, reward, survive):
 
         self.env_net.eval()
+        self.env_target_net.eval()
         self.value_net.train()
         self.value_target_net.eval()
         self.policy_target_net.eval()
 
+        # calculate intrinsic reward
+        with torch.no_grad():
+            state_next_latent_lastframe_prediction, reward_prediction, survive_prediction = self.env_net(state_latent, action)
+            state_next_latent_lastframe_prediction_slow, reward_prediction_slow, survive_prediction_slow = self.env_target_net(state_latent, action)
+            env_novelty = torch.mean(abs(state_next_latent_lastframe_prediction_slow - state_next_latent_lastframe_prediction), dim=-1)
+            # survive_novelty = abs(survive_prediction_slow - survive_prediction)
+            # reward_novelty = abs(reward_prediction_slow - reward_prediction)
+            #reward_total = reward + env_novelty * 1.0
+            reward_total = reward
+
         # value forward pass
         value_buffer = []
+        value_target_buffer = []
         value_loss_buffer = []
 
         for i in range(self.value_hallu_loops):
@@ -295,7 +306,7 @@ class agent():
                 if i == 0:
                     state_latent_hallu = state_latent
                     action_hallu = action
-                    state_next_latent_hallu, reward_hallu, survive_prob_hallu = (state_next_latent, reward, survive)
+                    state_next_latent_hallu, reward_hallu, survive_prob_hallu = (state_next_latent, reward_total, survive)
                     action_next_hallu = self.policy_target_net(state_next_latent_hallu)
 
                 else:
@@ -310,7 +321,7 @@ class agent():
 
             with torch.no_grad():
                 value_next_target_hallu = self.value_target_net(state_next_latent_hallu, action_next_hallu)
-                value_target_hallu = reward_hallu + value_next_target_hallu * survive_prob_hallu * 0.99
+                value_target_hallu = reward_hallu + value_next_target_hallu * survive_prob_hallu
 
             # optimize value
             self.value_optimizer.zero_grad()
@@ -320,6 +331,7 @@ class agent():
 
             with torch.no_grad():
                 value_buffer.append(value_hallu)
+                value_target_buffer.append(value_target_hallu)
                 value_loss_buffer.append(value_loss.unsqueeze(0))
 
         # update target models
@@ -332,8 +344,10 @@ class agent():
         if self.log_level >= 1:
             with torch.no_grad():
                 value_avg = torch.mean(torch.cat(value_buffer, dim=0))
+                value_target_avg = torch.mean(torch.cat(value_target_buffer, dim=0))
                 value_loss_avg = torch.mean(torch.cat(value_loss_buffer, dim=0))
             self.tensor_board.add_scalar('learn_value/avg', value_avg.item(), self.learn_count)
+            self.tensor_board.add_scalar('learn_value/target_avg', value_target_avg.item(), self.learn_count)
             self.tensor_board.add_scalar('learn_value/loss', value_loss_avg.item(), self.learn_count)
 
         # log value learn rates
