@@ -125,7 +125,7 @@ class model_free_deterministic_agent():
 
         self.policy_net_action_copy.load_state_dict(self.policy_net.state_dict())
 
-    def learn_value(self, state_latent, action, state_next_latent, reward, survive):
+    def learn_value(self, state, action, state_next, reward, survive):
 
         self.value_net.train()
         self.value_target_net.eval()
@@ -137,12 +137,12 @@ class model_free_deterministic_agent():
 
         # value forward pass
         with torch.no_grad():
-            action_next_hallu = self.policy_target_net(state_next_latent)
+            action_next = self.policy_target_net(state_next)
 
-        value = self.value_net(state_latent, action)
+        value = self.value_net(state, action)
 
         with torch.no_grad():
-            value_next_target = self.value_target_net(state_next_latent, action_next_hallu)
+            value_next_target = self.value_target_net(state_next, action_next)
             value_target = reward_total + value_next_target * survive * self.value_discount
 
         # optimize value

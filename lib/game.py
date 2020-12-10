@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from collections import deque
 import torch
-import memory
+from lib.memory import memory
 import cProfile
 import os
 
@@ -16,7 +16,6 @@ class game():
             environment,
             agent,
             tensor_board,
-            state_frames,
             learn_interval,
             max_timestep,
             memory_buffer_size,
@@ -40,7 +39,6 @@ class game():
         self.environment = environment
         self.agent = agent
         self.tensor_board = tensor_board
-        self.state_frames = state_frames
         self.learn_interval = learn_interval
         self.max_timestep = max_timestep
         self.memory_buffer_size = memory_buffer_size
@@ -61,13 +59,14 @@ class game():
 
         self.memory_dir = Path.cwd() / 'memory' / self.name
         Path(self.memory_dir).mkdir(parents=True, exist_ok=True)
-        self.memory_buffer_filename = self.memory_dir / 'memory.pt'
-        self.memory = memory.memory(self.memory_buffer_size, self.memory_buffer_filename, self.device)
+        self.memory_filename = self.memory_dir / 'memory.pt'
+        self.memory = memory(self.memory_buffer_size, self.memory_filename, self.device)
 
         self.action_space_min = torch.FloatTensor(self.environment.action_space.low, device=self.device)
         self.action_space_max = torch.FloatTensor(self.environment.action_space.high, device=self.device)
 
-        self.observation_next_buffer = None
+        self.observation_next = None
+
         self.log_observation_direct_buffer = deque()
         self.log_observation_indirect_buffer = deque()
         self.log_observation_indirect_target_buffer = deque()
@@ -154,20 +153,19 @@ class game():
     def reset(self):
 
         self.episode_timestep = 0
-        self.episode_cumulative_reward = 0
 
         observation_next_unxform = self.environment.reset()
 
         observation_next_direct, observation_next_indirect, observation_next_indirect_target = self.observation_input_transform(observation_next_unxform)
-        observation_next_direct.to(self.device)
-        observation_next_indirect.to(self.device)
-        observation_next_indirect_target.to(self.device)
+        observation_next_direct = observation_next_direct.to(self.device)
+        observation_next_indirect = observation_next_indirect.to(self.device)
+        observation_next_indirect_target = observation_next_indirect_target.to(self.device)
         if self.max_episode_timestamp is not None:
             observation_next_direct = torch.cat((observation_next_direct, (torch.FloatTensor([self.episode_timestep]) / self.max_episode_timestamp) * 2.0 - 1.0), dim=-1)
 
-        self.observation_next_direct_buffer = observation_next_direct.unsqueeze(0).repeat([self.state_frames] + [1]*len(observation_next_direct.shape))
-        self.observation_next_indirect_buffer = observation_next_indirect.unsqueeze(0).repeat([self.state_frames] + [1]*len(observation_next_indirect.shape))
-        self.observation_next_indirect_target_buffer = observation_next_indirect_target.unsqueeze(0).repeat([self.state_frames] + [1]*len(observation_next_indirect_target.shape))
+        self.episode_cumulative_reward = 0
+
+        self.observation_next = (observation_next_direct, observation_next_indirect, observation_next_indirect_target)
 
         self.environment.render()
 
@@ -175,12 +173,9 @@ class game():
 
         self.episode_timestep += 1
 
-        observation_direct_buffer = self.observation_next_direct_buffer.clone()
-        observation_indirect_buffer = self.observation_next_indirect_buffer.clone()
-        observation_indirect_target_buffer = self.observation_next_indirect_target_buffer.clone()
+        observation_direct, observation_indirect, observation_indirect_target = self.observation_next
 
-        action = self.agent.act(observation_direct=observation_direct_buffer.unsqueeze(0), observation_indirect=observation_indirect_buffer.unsqueeze(0)).squeeze(0)
-        action.to(self.device)
+        action = self.agent.act(observation_direct=observation_direct, observation_indirect=observation_indirect).squeeze(0).to(self.device)
 
         action_limited = torch.clamp(action, -1.0, 1.0)
         assert torch.all(action == action_limited)
@@ -191,29 +186,27 @@ class game():
         survive_unxform = 1.0 - terminate_unxform
 
         observation_next_direct, observation_next_indirect, observation_next_indirect_target = self.observation_input_transform(observation_next_unxform)
-        observation_next_direct.to(self.device)
-        observation_next_indirect.to(self.device)
-        observation_next_indirect_target.to(self.device)
+        observation_next_direct = observation_next_direct.to(self.device)
+        observation_next_indirect = observation_next_indirect.to(self.device)
+        observation_next_indirect_target = observation_next_indirect_target.to(self.device)
         if self.max_episode_timestamp is not None:
             observation_next_direct = torch.cat((observation_next_direct, (torch.FloatTensor([self.episode_timestep]) / self.max_episode_timestamp) * 2.0 - 1.0), dim=-1)
         reward = self.reward_input_transform(reward_unxform).to(self.device)
         survive = self.survive_input_transform(survive_unxform).to(self.device)
 
-        self.observation_next_direct_buffer = torch.cat((observation_next_direct.unsqueeze(0), observation_direct_buffer[:-1, :]), dim=0)
-        self.observation_next_indirect_buffer = torch.cat((observation_next_indirect.unsqueeze(0), observation_indirect_buffer[:-1, :]), dim=0)
-        self.observation_next_indirect_target_buffer = torch.cat((observation_next_indirect_target.unsqueeze(0), observation_indirect_target_buffer[:-1, :]), dim=0)
-
         self.episode_cumulative_reward += reward.item()
 
+        self.observation_next = (observation_next_direct, observation_next_indirect, observation_next_indirect_target)
+
         self.memory.add(
-            observation_direct=observation_direct_buffer,
-            observation_indirect=observation_indirect_buffer,
-            observation_indirect_target=observation_indirect_target_buffer,
+            observation_direct=observation_direct,
+            observation_indirect=observation_indirect,
+            observation_indirect_target=observation_indirect_target,
             action=action,
             reward=reward,
-            observation_next_direct=self.observation_next_direct_buffer,
-            observation_next_indirect=self.observation_next_indirect_buffer,
-            observation_next_indirect_target=self.observation_next_indirect_target_buffer,
+            observation_next_direct=observation_next_direct,
+            observation_next_indirect=observation_next_indirect,
+            observation_next_indirect_target=observation_next_indirect_target,
             survive=survive
         )
 

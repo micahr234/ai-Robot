@@ -1,11 +1,15 @@
 import torch
 import gym
-from agents.model_free_deterministic_agent import model_free_deterministic_agent
-from tensor_board import tensor_board
-from game import game
+import numpy as np
+from mlagents_envs.environment import UnityEnvironment
+from gym_unity.envs import UnityToGymWrapper
 
-num_of_observations = 2
-num_of_actions = 1
+from agents.model_free_deterministic_agent import model_free_deterministic_agent
+from lib.tensor_board import tensor_board
+from lib.game import game
+
+num_of_observations = 4
+num_of_actions = 2
 
 latent_net = torch.nn.Sequential(
 )
@@ -58,9 +62,10 @@ def action_output_transform(action):
     action_xform = action.tolist()
     return action_xform
 
-name='MountainCarContinuous1'
+name='Monkey1'
 
-env_instance = gym.make('MountainCarContinuous-v0')
+unity_env = UnityEnvironment('environments/Monkey/Monkey.exe', base_port=10000, worker_id=np.random.randint(1000), no_graphics=False, timeout_wait=None)
+env_instance = UnityToGymWrapper(unity_env, False, False, True)
 
 tensor_board_instance = tensor_board(name=name)
 
@@ -69,12 +74,12 @@ agent_instance = model_free_deterministic_agent(
     value_net=value_net,
     policy_net=policy_net,
     tensor_board=tensor_board_instance,
-    action_random_prob=lambda i: 0.9*(i<5000),
+    action_random_prob=lambda i: 0.3,
     value_learn_rate=lambda i: 0.0001,
-    value_discount=0.999,
-    value_polyak=0.0025,
+    value_discount=0.99,
+    value_polyak=0.001,
     policy_learn_rate=lambda i: 0.0001,
-    policy_polyak=0.0025,
+    policy_polyak=0.001,
     gpu=0)
 
 game_instance = game(
@@ -82,13 +87,12 @@ game_instance = game(
     environment=env_instance,
     agent=agent_instance,
     tensor_board=tensor_board_instance,
-    state_frames=1,
-    learn_interval=500,
+    learn_interval=100,
     max_timestep=40000,
     memory_buffer_size=40000,
     max_episode_timestamp=None,
     batch_size=200,
-    batches=500,
+    batches=100,
     render_delay=0,
     save=False,
     profile=False,
