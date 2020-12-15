@@ -8,11 +8,8 @@ from agents.model_free_deterministic_agent import model_free_deterministic_agent
 from lib.tensor_board import tensor_board
 from lib.game import game
 
-num_of_observations = 4
+num_of_observations = 5
 num_of_actions = 2
-
-latent_net = torch.nn.Sequential(
-)
 
 policy_net = torch.nn.Sequential(
     torch.nn.Linear(num_of_observations, 512),
@@ -40,19 +37,18 @@ def scale(tensor, input_min, input_max):
     scaled_tensor = (tensor - intercept) / slope
     return scaled_tensor
 
-def observation_input_transform(state):
-    state_direct_xform = torch.FloatTensor(state).contiguous()
+def observation_input_transform(state, timestep):
+    state_direct_xform_pre = torch.FloatTensor(state).contiguous()
     state_indirect_xform = torch.FloatTensor([])
     state_indirect_target_xform = torch.FloatTensor([])
+    max_episode_timestamp = 100
+    scaled_timestep = (torch.FloatTensor([[timestep]]) / max_episode_timestamp) * 2.0 - 1.0
+    state_direct_xform = torch.cat((state_direct_xform_pre, scaled_timestep), dim=-1)
     return state_direct_xform, state_indirect_xform, state_indirect_target_xform
 
 def reward_input_transform(reward):
     reward_xform = torch.FloatTensor([reward]).contiguous()
     return reward_xform
-
-def action_input_transform(action):
-    action_xform = torch.FloatTensor(action).contiguous()
-    return action_xform
 
 def survive_input_transform(done):
     survive_xform = torch.FloatTensor([float(done)]).contiguous()
@@ -64,8 +60,16 @@ def action_output_transform(action):
 
 name='Monkey1'
 
-unity_env = UnityEnvironment('environments/Monkey/Monkey.exe', base_port=10000, worker_id=np.random.randint(1000), no_graphics=False, timeout_wait=None)
-env_instance = UnityToGymWrapper(unity_env, False, False, True)
+
+num_of_envs = 5
+env_instance = []
+for env_num in range(num_of_envs):
+    no_graphics = False
+    unity_env = UnityEnvironment('environments/Monkey/Monkey.exe', base_port=10000+int(torch.randint(10000, (1, ))),
+                                 worker_id=env_num, no_graphics=no_graphics, timeout_wait=None)
+    env_instance.append(UnityToGymWrapper(unity_env, False, False, True))
+
+action_random_prob = torch.linspace(0, 0.5, num_of_envs)
 
 tensor_board_instance = tensor_board(name=name)
 
@@ -73,36 +77,30 @@ agent_instance = model_free_deterministic_agent(
     name=name,
     value_net=value_net,
     policy_net=policy_net,
-    tensor_board=tensor_board_instance,
-    action_random_prob=lambda i: 0.3,
-    value_learn_rate=lambda i: 0.0001,
+    value_learn_rate=0.0001,
     value_discount=0.99,
     value_polyak=0.001,
-    policy_learn_rate=lambda i: 0.0001,
-    policy_polyak=0.001,
-    gpu=0)
+    policy_learn_rate=0.0001,
+    policy_polyak=0.001)
 
 game_instance = game(
     name=name,
     environment=env_instance,
     agent=agent_instance,
     tensor_board=tensor_board_instance,
-    learn_interval=100,
-    max_timestep=40000,
-    memory_buffer_size=40000,
-    max_episode_timestamp=None,
+    steps=100,
+    epochs=10000,
+    memory_buffer_size=100000*num_of_envs,
     batch_size=200,
-    batches=100,
-    render_delay=0,
     save=False,
     profile=False,
     observation_input_transform=observation_input_transform,
-    action_input_transform=action_input_transform,
     reward_input_transform=reward_input_transform,
     survive_input_transform=survive_input_transform,
     action_output_transform=action_output_transform,
-)
+    action_random_prob=action_random_prob)
 
 game_instance.run()
 
-env_instance.close()
+for e in env_instance:
+    e.close()

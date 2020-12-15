@@ -4,39 +4,46 @@ import torch
 class memory():
 
     def __init__(self, capacity, filename, device):
-        self.position = 0
-        self.length = 0
         self.capacity = capacity
-        self.memory = {}
         self.device = device
 
-        self.filename = Path(filename)
+        self.position = 0
+        self.length = 0
+        self.memory = {}
 
-        if self.filename.is_file():
-            
-            # Load experience buffer
-            print('Loading experience buffer from file ' + str(self.filename))
-            buffer = torch.load(self.filename)
-            self.position = min(self.capacity-1, buffer['position'])
-            self.length = min(self.capacity, buffer['length'])
-            del buffer['position']
-            del buffer['length']
-            index = self.length
+        self.valid_filename = filename is not None
 
-            self.create(**buffer)
-            for key in buffer:
-                self.memory[key][0:index, :] = buffer[key][0:index, :]
+        if self.valid_filename:
 
-        else:
-            
-            print('No experience buffer to load')
+            self.filename = Path(filename)
 
-        pass
+            if self.filename.is_file():
+
+                # Load experience buffer
+                print('Loading experience buffer from file ' + str(self.filename))
+                buffer = torch.load(self.filename)
+                self.position = min(self.capacity-1, buffer['position'])
+                self.length = min(self.capacity, buffer['length'])
+                del buffer['position']
+                del buffer['length']
+                index = self.length
+
+                self.create(**buffer)
+                for key in buffer:
+                    self.memory[key][0:index, :] = buffer[key][0:index, :]
+
+            else:
+
+                print('No experience buffer to load')
 
     def create(self, **kwargs):
         for key, value in kwargs.items():
             self.memory[key] = torch.zeros([self.capacity] + list(value.shape), device=self.device, requires_grad=False)
-        pass
+
+    def clear(self):
+        self.position = 0
+        self.length = 0
+        self.memory = {}
 
     def get(self, index):
         if self.length == 0:
@@ -68,14 +75,18 @@ class memory():
             self.memory[key][index, :] = value
         self.position = (self.position + 1) % self.capacity
         self.length = min(self.capacity, self.length + 1)
-        pass
+
+    def concat(self, other_memory):
+        for n in range(len(other_memory)):
+            self.add(**other_memory.get(n))
 
     def save(self):
         if self.length == 0:
             raise ValueError('Memory buffer empty')
+        if self.valid_filename:
+            raise ValueError('No filename given')
         index = range(self.length)
         kwargs = self.get(index)
         kwargs['length'] = self.length
         kwargs['position'] = self.position
         torch.save(kwargs, self.filename)
-        pass
